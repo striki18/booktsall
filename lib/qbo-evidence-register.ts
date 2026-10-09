@@ -291,7 +291,7 @@ async function matchAllDocumentsToAllTransactions(
 /**
  * Analyze QBO side: for each transaction + its attachment(s), classify the register state
  */
-async function analyzeQboSide(
+export async function analyzeQboSide(
   transactions: QBOTransaction[],
   attachables: any[],
   inboxDocuments: any[],
@@ -421,8 +421,8 @@ async function analyzeQboSide(
             reviewCandidateTxnIds: candidateTxnIds,
           }));
         } else {
-          // Attachment exists in QBO but cannot be matched to any document deterministically
-          // Transaction remains MISSING per 4-state model
+          // Attachment exists in QBO on this transaction but matcher cannot establish
+          // a definitive document match. Evidence exists; needs human review.
           entries.push(createRegisterEntry({
             realmId: '',
             collectionRequestId: collectionRequestId ?? null,
@@ -436,8 +436,8 @@ async function analyzeQboSide(
             attachmentFilename: att.fileName ?? null,
             attachmentFileSize: att.fileSize ?? null,
             attachmentDownloadUrl: att.downloadUrl ?? null,
-            registerState: 'MISSING',
-            matchedDocumentId: null,
+            registerState: 'REVIEW_REQUIRED',
+            matchedDocumentId: matchingDoc.id,
             matchConfidence: matchResult?.confidence ?? null,
             matchFieldDetails: matchResult?.candidateDetails ?? null,
             correctQboTxnId: null,
