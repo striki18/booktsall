@@ -1,0 +1,157 @@
+
+> auditready@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.9 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.52.126.190:3000
+- Environments: .env.local, .env
+✓ Ready in 5.8s
+
+○ Compiling /api/generate ...
+▶ [2026-10-05T17:04:42.323Z] Transaction Retrieval: Fetching transactions from QuickBooks
+🔍 TransactionList request URL: https://sandbox-quickbooks.api.intuit.com/v3/company/9341457539527702/reports/TransactionList?start_date=2023-01-01&end_date=2023-12-31
+🔍 TransactionList response status: 200
+🔍 TransactionList raw response received
+🔍 Raw TransactionList content: {
+  "Header": {
+    "Time": "2026-10-05T10:04:50-07:00",
+    "ReportName": "TransactionList",
+    "StartPeriod": "2023-01-01",
+    "EndPeriod": "2023-12-31",
+    "Currency": "USD",
+    "Option": [
+      {
+        "Name": "NoReportData",
+        "Value": "false"
+      }
+    ]
+  },
+  "Columns": {
+    "Column": [
+      {
+        "ColTitle": "Date",
+        "ColType": "tx_date"
+      },
+      {
+        "ColTitle": "Transaction Type",
+        "ColType": "txn_type"
+      },
+      {
+        "ColTitle": "Num",
+        "ColType": "doc_num"
+      },
+      {
+        "ColTitle": "Posting",
+        "ColType": "is_no_post"
+      },
+      {
+        "ColTitle": "Name",
+        "ColType": "name"
+      },
+      {
+        "ColTitle": "Memo/Description",
+        "ColType": "memo"
+      },
+      {
+        "ColTitle": "Account",
+        "ColType": "account_name"
+      },
+      {
+        "ColTitle": "Split",
+        "ColType": "other_account"
+      },
+      {
+        "ColTitle": "Amount",
+        "ColType": "subt_nat_amount"
+      }
+    ]
+  },
+  "Rows": {
+    "Row": [
+      {
+        "ColData": [
+          {
+            "value": "2023-01-15"
+          },
+          {
+            "value": "Invoice",
+            "id": "145"
+          },
+          {
+            "value": "1038"
+          },
+          {
+            "value": "Yes"
+          },
+          {
+            "value": "Amy's Bird Sanctuary",
+            "id": "1"
+          },
+          {
+            "value": ""
+          },
+          {
+            "value": "Accounts Receivable (A/R)",
+            "id": "84"
+          },
+          {
+            "value": "Services",
+            "id": "1"
+          },
+          {
+            "value": "100.00"
+          }
+        ],
+        "type": "Data"
+      }
+    ]
+  }
+}
+🔍 Normalized TransactionList: [
+  {
+    "txnId": "145",
+    "txnType": "Invoice",
+    "date": "2023-01-15",
+    "vendor": "Amy's Bird Sanctuary",
+    "amount": 100,
+    "docNumber": "1038"
+  }
+]
+✓ [2026-10-05T17:04:50.907Z] Transaction Retrieval: Retrieved 1 transactions ({"transactionCount":1})
+▶ [2026-10-05T17:04:50.908Z] Attachable Retrieval: Fetching attachables from QuickBooks
+🔍 Attachable paginated query URL: https://sandbox-quickbooks.api.intuit.com/v3/company/9341457539527702/query?query=SELECT%20*%20FROM%20Attachable%20STARTPOSITION%201%20MAXRESULTS%201000
+🔍 Attachable query response status: 200
+🔍 Total attachables retrieved: 84
+✓ [2026-10-05T17:04:55.911Z] Attachable Retrieval: Retrieved 84 attachables ({"attachableCount":84})
+▶ [2026-10-05T17:04:55.911Z] Evidence Register Matching: Fetching QBO evidence register from database
+✓ [2026-10-05T17:04:56.190Z] Evidence Register Matching: Total: 0, Matched: 0, Missing: 0, Review Required: 0, Wrong Matched: 0 ({"totalEntries":0,"matchedCount":0,"missingCount":0,"reviewRequiredCount":0,"wrongMatchedCount":0})
+▶ [2026-10-05T17:04:56.191Z] Attachment Download: Downloading 0 attachments
+✗ [2026-10-05T17:04:56.193Z] Attachment Download: Progress: 0/0 (Successful: 0, Failed: 0) - Current: undefined
+[downloadAllAttachments] Starting bulk download for 0 attachments (2023-01-01 to 2023-12-31)
+✗ [2026-10-05T17:04:56.193Z] Attachment Download: Progress: 0/0 (Successful: 0, Failed: 0) - Current: undefined
+[downloadAllAttachments] Complete: 0 successful, 0 failed, 0 total
+✓ [2026-10-05T17:04:56.194Z] Attachment Download: Downloaded 0 successful, 0 failed ({"successfulCount":0,"failedCount":0})
+▶ [2026-10-05T17:04:56.195Z] Evidence CSV Generation: Generating evidence_register.csv
+✓ [2026-10-05T17:04:56.207Z] Evidence CSV Generation: CSVs generated and saved ({"evidenceRegisterPath":"c:\\Users\\veto\\Documents\\Codex\\2026-06-26\\you-are-my-senior-full-stack\\auditready\\output\\sandbox_company\\evidence_register.csv","missingDocumentsPath":"c:\\Users\\veto\\Documents\\Codex\\2026-06-26\\you-are-my-senior-full-stack\\auditready\\output\\sandbox_company\\missing_documents.csv","matchedCount":0,"missingCount":0})
+▶ [2026-10-05T17:04:56.208Z] ZIP Generation: Creating audit package ZIP
+ZIP created: c:\Users\veto\Documents\Codex\2026-06-26\you-are-my-senior-full-stack\auditready\output\sandbox_company\AuditPackage_sandbox_company_2023-01-01_2023-12-31.zip (356342 bytes)
+✓ [2026-10-05T17:04:56.562Z] ZIP Generation: ZIP created: c:\Users\veto\Documents\Codex\2026-06-26\you-are-my-senior-full-stack\auditready\output\sandbox_company\AuditPackage_sandbox_company_2023-01-01_2023-12-31.zip (356342 bytes) ({"zipSizeBytes":356342})
+✓ [2026-10-05T17:04:56.563Z] Pipeline Complete: End-to-end pipeline completed in 14240ms ({"elapsedTimeMs":14240,"transactionCount":1,"attachableCount":84,"matchedCount":0,"missingCount":0,"successfulDownloadCount":0,"failedDownloadCount":0,"zipSizeBytes":356342})
+
+=== PIPELINE SUMMARY ===
+Transactions Retrieved: 1
+Attachables Retrieved: 84
+Matched Records: 0
+Missing Records: 0
+Successful Downloads: 0
+Failed Downloads: 0
+ZIP Size: 356342 bytes
+Total Runtime: 14240ms
+ZIP Path: c:\Users\veto\Documents\Codex\2026-06-26\you-are-my-senior-full-stack\auditready\output\sandbox_company\AuditPackage_sandbox_company_2023-01-01_2023-12-31.zip
+========================
+
+ POST /api/generate 200 in 24.1s (next.js: 9.8s, application-code: 14.3s)
+ GET /api/evidence/qbo-register?companyId=sandbox_company 400 in 1101ms (next.js: 1051ms, application-code: 50ms)
+ GET /api/evidence/qbo-register?realmId=sandbox_company 200 in 434ms (next.js: 20ms, application-code: 414ms)
+ POST /api/evidence/qbo-register 200 in 527ms (next.js: 12ms, application-code: 515ms)

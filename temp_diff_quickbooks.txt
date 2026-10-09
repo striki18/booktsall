@@ -1,0 +1,674 @@
+diff --git a/lib/quickbooks.ts b/lib/quickbooks.ts
+index 3626b32..48ea5e0 100644
+--- a/lib/quickbooks.ts
++++ b/lib/quickbooks.ts
+@@ -3,6 +3,8 @@
+  * It uses the Supabase table `quickbooks_tokens` for persistent storage.
+  */
+ import { supabase } from './supabase';
++import { withApiRetry, withDownloadRetry } from './retry';
++import { withRetry, DOWNLOAD_RETRY_CONFIG, sleep } from './retry';
+ 
+ let memoryCache: any = null;
+ 
+@@ -67,18 +69,46 @@ async function refreshAccessToken(refreshToken: string) {
+     grant_type: 'refresh_token',
+     refresh_token: refreshToken,
+   });
+-  const res = await fetch(tokenUrl, {
+-    method: 'POST',
+-    headers: {
+-      Authorization: `Basic ${basicAuth}`,
+-      'Content-Type': 'application/x-www-form-urlencoded',
++
++  // Use retry logic for network failures (similar to download retry config)
++  // with 3 retries and 5 second wait between attempts
++  return await withRetry(async () => {
++    // Add timeout to prevent indefinite hanging
++    const controller = new AbortController();
++    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
++
++    try {
++      const res = await fetch(tokenUrl, {
++        method: 'POST',
++        headers: {
++          Authorization: `Basic ${basicAuth}`,
++          'Content-Type': 'application/x-www-form-urlencoded',
++        },
++        body: body.toString(),
++        signal: controller.signal,
++      });
++
++      if (!res.ok) {
++        const errBody = await res.text();
++        const error = new Error(`Failed to refresh QuickBooks token: ${res.status} ${errBody}`);
++        (error as any).status = res.status;
++        throw error;
++      }
++
++      const data = await res.json();
++      await storeToken(data);
++      return data.access_token;
++    } finally {
++      clearTimeout(timeoutId);
++    }
++  }, {
++    ...DOWNLOAD_RETRY_CONFIG,
++    maxRetries: 3,
++    waitMs: 5000,
++    onRetry: (attempt, error) => {
++      console.log(`[QuickBooks Token Refresh] Retry attempt ${attempt}/3: ${error.message}`);
+     },
+-    body: body.toString(),
+   });
+-  if (!res.ok) throw new Error('Failed to refresh QuickBooks token');
+-  const data = await res.json();
+-  await storeToken(data);
+-  return data.access_token;
+ }
+ 
+ /** Get a valid access token, refreshing if needed. */
+@@ -120,7 +150,12 @@ export async function getCompanyInfo() {
+   console.log('  token found:', tokenFound);
+   console.log('  token expired:', tokenExpired);
+ 
++  // Timing: getAccessToken()
++  const tokenStart = Date.now();
+   const accessToken = await getAccessToken();
++  const tokenDuration = Date.now() - tokenStart;
++  console.log('⏱️  getAccessToken duration:', tokenDuration, 'ms');
++
+   const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
+   if (!realmId) throw new Error('Realm ID not available');
+ 
+@@ -149,12 +184,17 @@ export async function getCompanyInfo() {
+   // API requires the realmId twice in the path for CompanyInfo.
+   const url = `${baseDomain}/v3/company/${realmId}/companyinfo/${realmId}`;
+ 
++  // Timing: CompanyInfo API fetch
++  const apiStart = Date.now();
+   const res = await fetch(url, {
+     headers: {
+       Authorization: `Bearer ${accessToken}`,
+       Accept: 'application/json',
+     },
+   });
++  const apiDuration = Date.now() - apiStart;
++  console.log('⏱️  CompanyInfo API duration:', apiDuration, 'ms');
++
+   console.log('  QuickBooks response status:', res.status);
+   if (!res.ok) {
+     const errBody = await res.text();
+@@ -242,38 +282,45 @@ export async function getTransactionReport(startDate: string, endDate: string) {
+  * the earlier 403 error was caused by an incorrect request (missing dates
+  * or using the Invoice query fallback). The debug route proved the request
+  * works when built correctly.
++ *
++ * Phase 10A: Wrapped with retry logic for HTTP 429 rate limiting.
+  */
+ export async function getTransactions(startDate: string, endDate: string) {
+-  // Ensure we have a valid access token and realm ID.
+-  const accessToken = await getAccessToken();
+-  const stored = await getStoredToken();
+-  const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
+-  if (!realmId) throw new Error('Realm ID not available');
++  return withApiRetry(async () => {
++    // Ensure we have a valid access token and realm ID.
++    const accessToken = await getAccessToken();
++    const stored = await getStoredToken();
++    const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
++    if (!realmId) throw new Error('Realm ID not available');
+ 
+-  // Use the sandbox domain for all requests.
+-  const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
+-  const reportUrl = `${sandboxDomain}/v3/company/${realmId}/reports/TransactionList?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
+-  console.log('🔍 TransactionList request URL:', reportUrl);
+-  const res = await fetch(reportUrl, {
+-    headers: {
+-      Authorization: `Bearer ${accessToken}`,
+-      Accept: 'application/json',
+-    },
++    // Use the sandbox domain for all requests.
++    const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
++    const reportUrl = `${sandboxDomain}/v3/company/${realmId}/reports/TransactionList?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
++    console.log('🔍 TransactionList request URL:', reportUrl);
++    const res = await fetch(reportUrl, {
++      headers: {
++        Authorization: `Bearer ${accessToken}`,
++        Accept: 'application/json',
++      },
++    });
++    console.log('🔍 TransactionList response status:', res.status);
++    if (!res.ok) {
++      const errBody = await res.text();
++      console.error('Failed to fetch TransactionList report:', res.status, errBody);
++      // Attach status for retry detection
++      const error = new Error('Failed to fetch TransactionList report');
++      (error as any).status = res.status;
++      throw error;
++    }
++    const raw = await res.json();
++    // Log the raw response for debugging (optional). Include full JSON for inspection.
++    console.log('🔍 TransactionList raw response received');
++    console.log('🔍 Raw TransactionList content:', JSON.stringify(raw, null, 2));
++    // Perform normalization and log the result.
++    const normalized = normalizeTransactionList(raw);
++    console.log('🔍 Normalized TransactionList:', JSON.stringify(normalized, null, 2));
++    return raw;
+   });
+-  console.log('🔍 TransactionList response status:', res.status);
+-  if (!res.ok) {
+-    const errBody = await res.text();
+-    console.error('Failed to fetch TransactionList report:', res.status, errBody);
+-    throw new Error('Failed to fetch TransactionList report');
+-  }
+-  const raw = await res.json();
+-  // Log the raw response for debugging (optional). Include full JSON for inspection.
+-  console.log('🔍 TransactionList raw response received');
+-  console.log('🔍 Raw TransactionList content:', JSON.stringify(raw, null, 2));
+-  // Perform normalization and log the result.
+-  const normalized = normalizeTransactionList(raw);
+-  console.log('🔍 Normalized TransactionList:', JSON.stringify(normalized, null, 2));
+-  return raw;
+ }
+ 
+ /**
+@@ -306,64 +353,71 @@ export async function getTransactions(startDate: string, endDate: string) {
+  *
+  * The function retains the existing authentication flow (`getAccessToken` and
+  * `getStoredToken`). No other parts of Phase 3A are altered.
++ *
++ * Phase 10A: Wrapped with retry logic for HTTP 429 rate limiting.
+  */
+ export async function getAttachables() {
+-  // 1. Authenticate
+-  const accessToken = await getAccessToken();
+-  // 2. Resolve realm ID
+-  const stored = await getStoredToken();
+-  const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
+-  if (!realmId) throw new Error('Realm ID not available');
++  return withApiRetry(async () => {
++    // 1. Authenticate
++    const accessToken = await getAccessToken();
++    // 2. Resolve realm ID
++    const stored = await getStoredToken();
++    const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
++    if (!realmId) throw new Error('Realm ID not available');
+ 
+-  // 3. Pagination constants – QuickBooks caps at 1000 records per request.
+-  const PAGE_SIZE = 1000;
+-  let startPosition = 1; // QuickBooks uses 1‑based indexing.
+-  const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
+-  const baseQuery = 'SELECT * FROM Attachable';
+-  const allAttachables: any[] = [];
++    // 3. Pagination constants – QuickBooks caps at 1000 records per request.
++    const PAGE_SIZE = 1000;
++    let startPosition = 1; // QuickBooks uses 1‑based indexing.
++    const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
++    const baseQuery = 'SELECT * FROM Attachable';
++    const allAttachables: any[] = [];
+ 
+-  while (true) {
+-    // Build a paginated query string.
+-    const paginatedQuery = `${baseQuery} STARTPOSITION ${startPosition} MAXRESULTS ${PAGE_SIZE}`;
+-    const url = `${sandboxDomain}/v3/company/${realmId}/query?query=${encodeURIComponent(paginatedQuery)}`;
+-    console.log('🔍 Attachable paginated query URL:', url);
++    while (true) {
++      // Build a paginated query string.
++      const paginatedQuery = `${baseQuery} STARTPOSITION ${startPosition} MAXRESULTS ${PAGE_SIZE}`;
++      const url = `${sandboxDomain}/v3/company/${realmId}/query?query=${encodeURIComponent(paginatedQuery)}`;
++      console.log('🔍 Attachable paginated query URL:', url);
+ 
+-    const res = await fetch(url, {
+-      method: 'GET',
+-      headers: {
+-        Authorization: `Bearer ${accessToken}`,
+-        Accept: 'application/json',
+-      },
+-    });
+-    console.log('🔍 Attachable query response status:', res.status);
+-    if (!res.ok) {
+-      const errBody = await res.text();
+-      console.error('Failed to fetch Attachable query:', res.status, errBody);
+-      throw new Error('Failed to fetch Attachable query');
+-    }
++      const res = await fetch(url, {
++        method: 'GET',
++        headers: {
++          Authorization: `Bearer ${accessToken}`,
++          Accept: 'application/json',
++        },
++      });
++      console.log('🔍 Attachable query response status:', res.status);
++      if (!res.ok) {
++        const errBody = await res.text();
++        console.error('Failed to fetch Attachable query:', res.status, errBody);
++        // Attach status for retry detection
++        const error = new Error('Failed to fetch Attachable query');
++        (error as any).status = res.status;
++        throw error;
++      }
+ 
+-    const raw = await res.json();
+-    // QuickBooks may nest the results under `QueryResponse.Attachable` or directly
+-    // under `Attachable`. Normalise to an array.
+-    const batch = raw?.QueryResponse?.Attachable ?? raw?.Attachable ?? [];
+-    if (Array.isArray(batch)) {
+-      allAttachables.push(...batch);
+-    } else if (batch) {
+-      // Single object case – still push to the collection.
+-      allAttachables.push(batch);
+-    }
++      const raw = await res.json();
++      // QuickBooks may nest the results under `QueryResponse.Attachable` or directly
++      // under `Attachable`. Normalise to an array.
++      const batch = raw?.QueryResponse?.Attachable ?? raw?.Attachable ?? [];
++      if (Array.isArray(batch)) {
++        allAttachables.push(...batch);
++      } else if (batch) {
++        // Single object case – still push to the collection.
++        allAttachables.push(batch);
++      }
+ 
+-    // If the batch size is less than the page size, we have reached the final page.
+-    if (!Array.isArray(batch) || batch.length < PAGE_SIZE) {
+-      break;
++      // If the batch size is less than the page size, we have reached the final page.
++      if (!Array.isArray(batch) || batch.length < PAGE_SIZE) {
++        break;
++      }
++      // Advance to the next page.
++      startPosition += PAGE_SIZE;
+     }
+-    // Advance to the next page.
+-    startPosition += PAGE_SIZE;
+-  }
+ 
+-  console.log('🔍 Total attachables retrieved:', allAttachables.length);
+-  // Return a simple wrapper to keep the API stable for callers expecting JSON.
+-  return { attachables: allAttachables };
++    console.log('🔍 Total attachables retrieved:', allAttachables.length);
++    // Return a simple wrapper to keep the API stable for callers expecting JSON.
++    return { attachables: allAttachables };
++  });
+ }
+ 
+ /**
+@@ -380,6 +434,8 @@ export async function getAttachables() {
+  * @param destFolder - The destination folder path
+  * @param failed - Optional array to collect failure details for Phase 5C
+  * @returns Object with success status, file path, and any error message
++ *
++ * Phase 10B: Network/connection failures are retried up to 3 times with 5-second wait.
+  */
+ export interface DownloadFileResult {
+   success: boolean;
+@@ -410,13 +466,15 @@ export async function downloadFile(
+ 
+     console.log('🔍 Download request URL:', downloadUrl);
+ 
+-    // 4. Make the download request with Bearer authorization
+-    // The download endpoint does not accept application/octet-stream - omit Accept header
+-    const res = await fetch(downloadUrl, {
+-      method: 'GET',
+-      headers: {
+-        Authorization: `Bearer ${accessToken}`,
+-      },
++    // 4. Make the download request with Bearer authorization - WITH RETRY for connection failures
++    // Phase 10B: Retry on network/connection failures (not HTTP errors like 404, 403, etc.)
++    const res = await withDownloadRetry(async () => {
++      return await fetch(downloadUrl, {
++        method: 'GET',
++        headers: {
++          Authorization: `Bearer ${accessToken}`,
++        },
++      });
+     });
+ 
+     console.log('🔍 Download response status:', res.status);
+@@ -479,25 +537,43 @@ export async function downloadFile(
+   }
+ }
+ 
++/**
++ * Progress callback for download operations.
++ *
++ * Phase 10C: Provides real-time progress information during bulk downloads.
++ */
++export interface DownloadProgress {
++  totalAttachments: number;
++  completed: number;
++  successful: number;
++  failed: number;
++  currentFile?: string;
++  stage: 'started' | 'in_progress' | 'completed' | 'failed';
++}
++
+ /**
+  * Bulk download all attachments from matched evidence-register records.
+- * 
++ *
+  * @param matched - Array of matched evidence-register records (from buildEvidenceRegister)
+  * @param startDate - Start date for the query (used for logging)
+  * @param endDate - End date for the query (used for logging)
++ * @param onProgress - Optional callback for progress updates (Phase 10C)
+  * @returns Object with successful downloads, failed downloads, and counts
+- * 
++ *
+  * Phase 5D: Implements bulk download with failure collection.
+  * - Reuses downloadFile() for each attachment
+  * - Reuses Phase 5B storage and filename behavior
+  * - Continues on individual failures
+  * - Collects failures in failed[] array
+  * - Returns deterministic results
++ *
++ * Phase 10C: Adds progress counter with real-time updates.
+  */
+ export async function downloadAllAttachments(
+   matched: any[],
+   startDate: string,
+-  endDate: string
++  endDate: string,
++  onProgress?: (progress: DownloadProgress) => void
+ ): Promise<{
+   successful: Array<{
+     attachableId: string;
+@@ -519,10 +595,10 @@ export async function downloadAllAttachments(
+ }> {
+   const fs = await import('fs');
+   const path = await import('path');
+-  
++
+   // Destination folder (project root / attachments) - Phase 5B behavior
+   const destFolder = path.join(process.cwd(), 'attachments');
+-  
++
+   // Ensure destination folder exists
+   if (!fs.existsSync(destFolder)) {
+     fs.mkdirSync(destFolder, { recursive: true });
+@@ -539,7 +615,7 @@ export async function downloadAllAttachments(
+     filePath: string;
+     fileSize: number;
+   }> = [];
+-  
++
+   const failed: Array<{
+     attachableId: string | null;
+     fileName: string;
+@@ -549,8 +625,37 @@ export async function downloadAllAttachments(
+ 
+   // Filter to only records with attachments
+   const attachmentsToDownload = matched.filter(m => m.hasAttachment);
+-  
+-  console.log(`[downloadAllAttachments] Starting bulk download for ${attachmentsToDownload.length} attachments (${startDate} to ${endDate})`);
++  const totalAttachments = attachmentsToDownload.length;
++
++  // Progress tracking
++  let completed = 0;
++  let successfulCount = 0;
++  let failedCount = 0;
++
++  const emitProgress = (stage: DownloadProgress['stage'], currentFile?: string) => {
++    if (onProgress) {
++      onProgress({
++        totalAttachments,
++        completed,
++        successful: successfulCount,
++        failed: failedCount,
++        currentFile,
++        stage,
++      });
++    }
++    // Also log to console for visibility
++    if (stage === 'started') {
++      console.log(`[downloadAllAttachments] Starting bulk download for ${totalAttachments} attachments (${startDate} to ${endDate})`);
++    } else if (stage === 'in_progress') {
++      console.log(`[downloadAllAttachments] Progress: ${completed}/${totalAttachments} (Successful: ${successfulCount}, Failed: ${failedCount}) - Current: ${currentFile}`);
++    } else if (stage === 'completed') {
++      console.log(`[downloadAllAttachments] Complete: ${successfulCount} successful, ${failedCount} failed, ${totalAttachments} total`);
++    } else if (stage === 'failed') {
++      console.log(`[downloadAllAttachments] Failed: ${completed}/${totalAttachments} (Successful: ${successfulCount}, Failed: ${failedCount})`);
++    }
++  };
++
++  emitProgress('started');
+ 
+   for (const record of attachmentsToDownload) {
+     const attachableId = record.attachableId;
+@@ -567,6 +672,9 @@ export async function downloadAllAttachments(
+         timestamp: new Date().toISOString(),
+       };
+       failed.push(failure);
++      failedCount++;
++      completed++;
++      emitProgress('in_progress', originalFileName);
+       console.log(`[downloadAllAttachments] Skipped: Missing attachableId for ${originalFileName}`);
+       continue;
+     }
+@@ -575,10 +683,12 @@ export async function downloadAllAttachments(
+     const newFileName = `${sanitize(txnType)}_${sanitize(docNumber)}_${originalFileName}`;
+ 
+     console.log(`[downloadAllAttachments] Downloading ${attachableId} -> ${newFileName}`);
++    emitProgress('in_progress', newFileName);
+ 
+-    // Reuse downloadFile() - Phase 5A implementation
++    // Reuse downloadFile() - Phase 5A implementation (with retry)
+     const result = await downloadFile(attachableId, newFileName, destFolder);
+ 
++    completed++;
+     if (result.success) {
+       // Get file size
+       let fileSize = 0;
+@@ -586,7 +696,7 @@ export async function downloadAllAttachments(
+         const stats = fs.statSync(result.filePath);
+         fileSize = stats.size;
+       }
+-      
++
+       successful.push({
+         attachableId,
+         fileName: newFileName,
+@@ -595,6 +705,7 @@ export async function downloadAllAttachments(
+         filePath: result.filePath!,
+         fileSize,
+       });
++      successfulCount++;
+       console.log(`[downloadAllAttachments] Success: ${attachableId} (${fileSize} bytes)`);
+     } else {
+       failed.push({
+@@ -603,15 +714,15 @@ export async function downloadAllAttachments(
+         error: result.error || 'Unknown error',
+         timestamp: result.timestamp ?? new Date().toISOString(),
+       });
++      failedCount++;
+       console.log(`[downloadAllAttachments] Failed: ${attachableId} - ${result.error}`);
+     }
++    emitProgress('in_progress', newFileName);
+   }
+ 
+-  const totalAttempted = attachmentsToDownload.length;
+-  const successfulCount = successful.length;
+-  const failedCount = failed.length;
++  const totalAttempted = totalAttachments;
+ 
+-  console.log(`[downloadAllAttachments] Complete: ${successfulCount} successful, ${failedCount} failed, ${totalAttempted} total`);
++  emitProgress('completed');
+ 
+   return {
+     successful,
+@@ -671,9 +782,16 @@ export function normalizeTransactionList(report: any) {
+ 
+     const amountNumber = rawAmount !== null && rawAmount !== '' ? Number(rawAmount) : null;
+ 
++    // Normalize transaction type to canonical QuickBooks entity type
++    // used by AttachableRef (e.g., "Bill Payment (Check)" -> "BillPayment")
++    let normalizedTxnType = rawTxnType ?? null;
++    if (normalizedTxnType === 'Bill Payment (Check)') {
++      normalizedTxnType = 'BillPayment';
++    }
++
+     return {
+       txnId: rawTxnId ?? null,
+-      txnType: rawTxnType ?? null,
++      txnType: normalizedTxnType,
+       date: rawDate ?? null,
+       vendor: rawVendor ?? null,
+       amount: amountNumber,
+@@ -683,6 +801,21 @@ export function normalizeTransactionList(report: any) {
+   return normalized;
+ }
+ 
++/**
++ * Build a QBO deep-link URL for a transaction.
++ *
++ * QBO deep-link format: https://app.qbo.intuit.com/app/transaction/{transactionType}?txnId={transactionId}
++ *
++ * @param txnType - The transaction type as stored/mapped by AuditReady (e.g., "Invoice", "Bill", "BillPayment", "Check", etc.)
++ * @param txnId - The QuickBooks transaction ID
++ * @returns The full deep-link URL or null if either parameter is missing
++ */
++export function buildQboTransactionUrl(txnType: string | null, txnId: string | null): string | null {
++  if (!txnType || !txnId) return null;
++  // Use the transaction type exactly as stored/mapped by AuditReady
++  return `https://app.qbo.intuit.com/app/transaction/${encodeURIComponent(txnType)}?txnId=${encodeURIComponent(txnId)}`;
++}
++
+ /**
+  * Phase 3C – Normalize Attachable records.
+  *
+@@ -760,4 +893,133 @@ export function normalizeAttachables(raw: any): any[] {
+     }
+   }
+   return normalized;
+-}
+\ No newline at end of file
++}
++
++/**
++ * Upload an attachable file to QuickBooks Online.
++ *
++ * Uses the QBO upload endpoint:
++ *   POST /v3/company/{realmId}/upload
++ *
++ * The request must be multipart/form-data containing:
++ *   - file: the file bytes with filename and content type
++ *   - AttachableRef: JSON metadata including EntityRef (entityType, entityId)
++ *
++ * @param fileBytes - The file content as Uint8Array or Buffer
++ * @param filename - Original filename
++ * @param contentType - MIME type (e.g., 'application/pdf', 'image/png')
++ * @param entityType - QuickBooks entity type (e.g., 'Invoice', 'Bill', 'PurchaseOrder')
++ * @param entityId - QuickBooks entity ID to attach the file to
++ * @returns The QBO Attachable response
++ *
++ * Phase 10A: Wrapped with retry logic for HTTP 429 rate limiting.
++ */
++export interface UploadAttachableResult {
++  attachable: any;
++  time: string;
++}
++
++export async function uploadAttachable(
++  fileBytes: Uint8Array | Buffer,
++  filename: string,
++  contentType: string,
++  entityType: string,
++  entityId: string
++): Promise<UploadAttachableResult> {
++  return withApiRetry(async () => {
++    // 1. Get valid access token (handles refresh automatically)
++    const accessToken = await getAccessToken();
++
++    // 2. Resolve realm ID
++    const stored = await getStoredToken();
++    const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
++    if (!realmId) throw new Error('Realm ID not available');
++
++    // 3. Build the upload URL using the sandbox domain
++    const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
++    const uploadUrl = `${sandboxDomain}/v3/company/${realmId}/upload`;
++
++    // 4. Create multipart form data in the QBO upload format.
++    //    Part names are zero-indexed: file_metadata_0 (JSON) and file_content_0 (binary).
++    const formData = new FormData();
++
++    // Add the file content part - convert Buffer/Uint8Array to ArrayBuffer for Blob
++    // Ensure we create a proper copy of the buffer
++    let fileArrayBuffer: ArrayBuffer;
++    if (fileBytes instanceof Buffer) {
++      const buf = fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength);
++      fileArrayBuffer = new ArrayBuffer(buf.byteLength);
++      new Uint8Array(fileArrayBuffer).set(new Uint8Array(buf));
++    } else if (fileBytes instanceof Uint8Array) {
++      const buf = fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength);
++      fileArrayBuffer = new ArrayBuffer(buf.byteLength);
++      new Uint8Array(fileArrayBuffer).set(new Uint8Array(buf));
++    } else {
++      fileArrayBuffer = fileBytes;
++    }
++    // Create a new Uint8Array to ensure we have a clean copy for Blob
++    const fileUint8Array = new Uint8Array(fileArrayBuffer);
++    const fileBlob = new Blob([fileUint8Array], { type: contentType });
++    formData.append('file_content_0', fileBlob, filename);
++
++    // Add the Attachable metadata JSON part (file_metadata_0)
++    const attachableMetadata = JSON.stringify({
++      AttachableRef: [
++        {
++          EntityRef: {
++            type: entityType,
++            value: entityId,
++          },
++          IncludeOnSend: false,
++        },
++      ],
++      FileName: filename,
++      ContentType: contentType,
++    });
++    // The metadata part must be sent with Content-Type: application/json.
++    // Appending a plain string would set it to text/plain, which QBO rejects.
++    formData.append('file_metadata_0', new Blob([attachableMetadata], { type: 'application/json' }));
++
++    // Debug: Log the exact Attachable metadata being sent
++    console.log('🔍 Attachable metadata being sent:', attachableMetadata);
++    console.log('🔍 FormData entries:');
++    for (const [key, value] of formData.entries()) {
++      if (value instanceof Blob) {
++        console.log(`  ${key}: Blob(size=${value.size}, type=${value.type})`);
++      } else {
++        console.log(`  ${key}: ${value}`);
++      }
++    }
++
++    console.log('🔍 Upload request URL:', uploadUrl);
++    console.log('🔍 Upload filename:', filename, 'contentType:', contentType);
++    console.log('🔍 Upload entityType:', entityType, 'entityId:', entityId);
++
++    // 5. Make the upload request with Bearer authorization
++    const res = await fetch(uploadUrl, {
++      method: 'POST',
++      headers: {
++        Authorization: `Bearer ${accessToken}`,
++        Accept: 'application/json',
++        // Note: Do NOT set Content-Type header - let the browser/fetch set it with the boundary
++      },
++      body: formData,
++    });
++
++    console.log('🔍 Upload response status:', res.status);
++
++    if (!res.ok) {
++      const errBody = await res.text();
++      console.error('Failed to upload attachment:', res.status, errBody);
++      // Attach status for retry detection
++      const error = new Error(`Upload failed: ${res.status} ${errBody}`);
++      (error as any).status = res.status;
++      throw error;
++    }
++
++    const result = await res.json();
++    console.log('🔍 Upload successful:', JSON.stringify(result, null, 2));
++
++    return result;
++  });
++}

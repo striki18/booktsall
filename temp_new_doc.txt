@@ -1,0 +1,4 @@
+Vendor: Vendor 5  
+Amount: 300  
+Date: 2024-01-15  
+Document Number: INV-1004 

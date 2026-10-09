@@ -1,0 +1,7 @@
+Invoice
+Vendor: Vendor 5
+Date: 2024-01-15
+Total: 300
+Invoice Number: INV-1004
+
+Description: Consulting services for January 2024

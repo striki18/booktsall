@@ -1,0 +1,12 @@
+[eval]:1
+const { createClient } = require('@supabase/supabase-js'); const supabaseUrl = 'https://yldsmegrdxcuqlfpzhht.supabase.co'; const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlsZHNtZWdyZHhjdXFsZnB6aGh0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4Mjk1MTE0NCwiZXhwIjoyMDk4NTI3MTQ0fQ.VmP_kilXDb4YZbbRf7C7VNaReB9Jr2B6M5r258yYh6A'; const supabase = createClient(supabaseUrl, supabaseKey); async function check() { const { data, error } = await supabase.from('qbo_evidence_register').select('qbo_txn_id, qbo_txn_date, realm_id, register_state'); console.log('Error:', JSON.stringify(error)); console.log('Count:', data.length); data.forEach((row, i) =, row.qbo_txn_id, row.qbo_txn_date, row.realm_id, row.register_state)); } check().then(() =; process.exit(1)});
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  ^^^^^^^^
+Expression expected
+
+SyntaxError: Invalid left-hand side in assignment
+    at makeContextifyScript (node:internal/vm:194:14)
+    at compileScript (node:internal/process/execution:388:10)
+    at evalTypeScript (node:internal/process/execution:260:22)
+    at node:internal/main/eval_string:71:3
+
+Node.js v24.18.0

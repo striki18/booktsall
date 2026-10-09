@@ -29,28 +29,28 @@ export function ensureOutputDir(companyName?: string): string {
 }
 
 /**
- * Split evidence register into matched and missing arrays.
- * - matched: records with hasAttachment=true and not orphaned (linked to transaction)
- * - missing: records with hasAttachment=false (transactions without attachments)
- * Note: Orphaned attachments (hasAttachment=true, orphaned=true) are excluded from both
- * as they don't belong to a specific transaction for CSV reporting.
+ * Split evidence register into 4-state categories.
+ * The evidence_register.csv contains MATCHED, REVIEW_REQUIRED, WRONG_MATCHED transactions.
+ * The missing_documents.csv contains only MISSING state transactions.
+ *
+ * @param register - Register entries from QBO evidence register
+ * @returns Object with allEntries (for evidence_register.csv) and missingEntries (for missing_documents.csv)
  */
-export function splitEvidenceRegister(register: any[]): { matched: any[]; missing: any[] } {
-  const matched: any[] = [];
-  const missing: any[] = [];
+export function splitEvidenceRegister(register: any[]): {
+  allEntries: any[];
+  missingEntries: any[]
+} {
+  // MATCHED, REVIEW_REQUIRED, WRONG_MATCHED go to evidence_register.csv
+  const allEntries = register.filter(entry => 
+    entry.registerState === 'MATCHED' ||
+    entry.registerState === 'REVIEW_REQUIRED' ||
+    entry.registerState === 'WRONG_MATCHED'
+  );
 
-  for (const record of register) {
-    if (record.hasAttachment && !record.orphaned) {
-      // Matched transaction with attachment
-      matched.push(record);
-    } else if (!record.hasAttachment && record.txnId) {
-      // Transaction without attachment
-      missing.push(record);
-    }
-    // Orphaned attachments are excluded from both CSVs per requirements
-  }
+  // Only MISSING state entries go to missing_documents.csv
+  const missingEntries = register.filter(entry => entry.registerState === 'MISSING');
 
-  return { matched, missing };
+  return { allEntries, missingEntries };
 }
 
 /**
@@ -68,12 +68,12 @@ export async function generateAndSaveCsvs(
   matchedCount: number;
   missingCount: number;
 }> {
-  // Split register into matched and missing
-  const { matched, missing } = splitEvidenceRegister(register);
+  // Split register into all entries and missing entries
+  const { allEntries, missingEntries } = splitEvidenceRegister(register);
 
   // Generate CSV content
-  const evidenceCsv = generateEvidenceRegisterCsv(matched);
-  const missingCsv = generateMissingReportCsv(missing);
+  const evidenceCsv = generateEvidenceRegisterCsv(allEntries);
+  const missingCsv = generateMissingReportCsv(missingEntries);
 
   // Ensure output directory exists
   const outputDir = ensureOutputDir(companyName);
@@ -89,8 +89,8 @@ export async function generateAndSaveCsvs(
   return {
     evidenceRegisterPath,
     missingDocumentsPath,
-    matchedCount: matched.length,
-    missingCount: missing.length,
+    matchedCount: register.filter(e => e.registerState === 'MATCHED').length,
+    missingCount: missingEntries.length,
   };
 }
 

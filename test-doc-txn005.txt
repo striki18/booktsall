@@ -1,0 +1,14 @@
+INVOICE
+
+Vendor: Vendor 5
+Date: 2024-01-15
+Amount: $300.00
+Invoice Number: INV-1004
+
+Description: Test invoice for TXN-005 matching
+Line 1: Service A - $150.00
+Line 2: Service B - $150.00
+
+Total: $300.00
+
+This is a fresh document for second real register match test.

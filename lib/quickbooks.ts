@@ -623,8 +623,12 @@ export async function downloadAllAttachments(
     timestamp: string;
   }> = [];
 
-  // Filter to only records with attachments
-  const attachmentsToDownload = matched.filter(m => m.hasAttachment);
+  // Filter to only records with attachments AND within the date range
+  const attachmentsToDownload = matched.filter(m => {
+    if (!m.hasAttachment) return false;
+    if (!m.date) return false;
+    return m.date >= startDate && m.date <= endDate;
+  });
   const totalAttachments = attachmentsToDownload.length;
 
   // Progress tracking

@@ -41,10 +41,11 @@ export function generateCsv(
 }
 
 /**
- * Generate Evidence Register CSV from matched[] records.
+ * Generate Evidence Register CSV from register entries.
  * Required columns: Date, Transaction Type, Doc Number, Vendor/Customer, Amount, Attachment Filename, Attachable ID, Status
+ * Status uses the 4 canonical states: MATCHED, MISSING, REVIEW_REQUIRED, WRONG_MATCHED
  */
-export function generateEvidenceRegisterCsv(matched: any[]): string {
+export function generateEvidenceRegisterCsv(registerEntries: any[]): string {
   const columns = [
     { key: 'date', header: 'Date' },
     { key: 'txnType', header: 'Transaction Type' },
@@ -56,26 +57,26 @@ export function generateEvidenceRegisterCsv(matched: any[]): string {
     { key: 'status', header: 'Status' },
   ];
   
-  // Map matched records to CSV row format
-  const csvRecords = matched.map((m) => ({
-    date: m.date ?? '',
-    txnType: m.txnType ?? '',
-    docNumber: m.docNumber ?? '',
-    vendor: m.vendor ?? '',
-    amount: m.amount ?? '',
-    fileName: m.fileName ?? '',
-    attachableId: m.attachableId ?? '',
-    status: m.unmatched ? 'Unmatched' : (m.hasAttachment ? 'Matched' : 'Missing'),
+  // Map register entries to CSV row format using registerState as the status
+  const csvRecords = registerEntries.map((entry) => ({
+    date: entry.qboTxnDate ?? entry.date ?? '',
+    txnType: entry.qboTxnType ?? entry.txnType ?? '',
+    docNumber: entry.qboTxnDocNumber ?? entry.docNumber ?? '',
+    vendor: entry.qboTxnVendor ?? entry.vendor ?? '',
+    amount: entry.qboTxnAmount ?? entry.amount ?? '',
+    fileName: entry.attachmentFilename ?? entry.fileName ?? '',
+    attachableId: entry.attachableId ?? '',
+    status: entry.registerState ?? '',
   }));
   
   return generateCsv(csvRecords, columns);
 }
 
 /**
- * Generate Missing Documents CSV from missing[] records.
+ * Generate Missing Documents CSV from register entries with MISSING state.
  * Required columns: Date, Transaction Type, Doc Number, Vendor/Customer, Amount, Missing Since
  */
-export function generateMissingReportCsv(missing: any[]): string {
+export function generateMissingReportCsv(registerEntries: any[]): string {
   const columns = [
     { key: 'date', header: 'Date' },
     { key: 'txnType', header: 'Transaction Type' },
@@ -85,15 +86,18 @@ export function generateMissingReportCsv(missing: any[]): string {
     { key: 'missingSince', header: 'Missing Since' },
   ];
   
-  // Map missing records to CSV row format
-  const csvRecords = missing.map((m) => ({
-    date: m.date ?? '',
-    txnType: m.txnType ?? '',
-    docNumber: m.docNumber ?? '',
-    vendor: m.vendor ?? '',
-    amount: m.amount ?? '',
+  // Filter to only MISSING entries
+  const missingEntries = registerEntries.filter(entry => entry.registerState === 'MISSING');
+  
+  // Map missing entries to CSV row format
+  const csvRecords = missingEntries.map((entry) => ({
+    date: entry.qboTxnDate ?? entry.date ?? '',
+    txnType: entry.qboTxnType ?? entry.txnType ?? '',
+    docNumber: entry.qboTxnDocNumber ?? entry.docNumber ?? '',
+    vendor: entry.qboTxnVendor ?? entry.vendor ?? '',
+    amount: entry.qboTxnAmount ?? entry.amount ?? '',
     // Missing Since: use the transaction date as the "missing since" date
-    missingSince: m.date ?? '',
+    missingSince: entry.qboTxnDate ?? entry.date ?? '',
   }));
   
   return generateCsv(csvRecords, columns);
