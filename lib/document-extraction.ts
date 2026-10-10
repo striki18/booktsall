@@ -571,11 +571,12 @@ export function calculateMatchConfidence(
  * Match a document against a list of QBO transactions.
  * If transactions are not provided, fetches them from the collection request (legacy behavior).
  * If transactions ARE provided, they are assumed to be pre-filtered (no claimed transaction filtering).
+ * collectionRequestId is optional - required only when transactions are not supplied (legacy path).
  */
 export async function matchDocumentToTransactions(
   documentId: string,
   docFields: ExtractedDocumentFields,
-  collectionRequestId: string,
+  collectionRequestId: string | undefined,
   transactions?: QBOTransaction[],
   realmId?: string
 ): Promise<MatchResult> {
@@ -583,6 +584,22 @@ export async function matchDocumentToTransactions(
 
   // Legacy behavior: fetch from collection request if transactions not provided
   if (!txns) {
+    // collectionRequestId is required for legacy path
+    if (!collectionRequestId) {
+      return {
+        documentId,
+        transactionId: null,
+        confidence: 0,
+        matchSignals: {
+          vendorMatch: false,
+          amountMatch: false,
+          dateMatch: false,
+          documentNumberMatch: false,
+        },
+        status: 'no_match',
+      };
+    }
+
     const request = await getCollectionRequestWithTransactions(collectionRequestId);
 
     if (!request || request.transactions.length === 0) {
@@ -607,6 +624,7 @@ export async function matchDocumentToTransactions(
   }
   // If transactions ARE provided, they are assumed to be pre-filtered already
   // (i.e., claimed transactions already removed). Do NOT call getClaimedTransactionIds again.
+  // In this case, collectionRequestId is NOT passed to getCollectionRequestWithTransactions.
 
   if (!txns || txns.length === 0) {
     return {

@@ -273,16 +273,14 @@ async function matchAllDocumentsToAllTransactions(
     if (!fields) continue;
 
     // Use pre-extracted fields and pre-fetched transactions to avoid duplicate work
-    if (collectionRequestId) {
-      const matchResult = await matchDocumentToTransactions(
-        doc.id,
-        fields,
-        collectionRequestId,
-        transactions,  // Pass pre-fetched transactions
-        realmId        // Pass realmId for claimed transaction filtering
-      );
-      results.set(doc.id, matchResult);
-    }
+    const matchResult = await matchDocumentToTransactions(
+      doc.id,
+      fields,
+      collectionRequestId,
+      transactions,  // Pass pre-fetched transactions
+      realmId        // Pass realmId for claimed transaction filtering
+    );
+    results.set(doc.id, matchResult);
   }
 
   return results;
@@ -445,8 +443,10 @@ export async function analyzeQboSide(
           }));
         }
       } else {
-        // Attachment exists in QBO but no corresponding inbox document
-        // This is an "orphaned" attachment in QBO - treat as MISSING since we can't verify
+        // Attachment exists in QBO and is linked to this transaction,
+        // but no corresponding inbox document was found.
+        // The attachment must remain visible for human review.
+        // The absence of an inbox document does not mean the QBO attachment is missing.
         entries.push(createRegisterEntry({
           realmId: '',
           collectionRequestId: collectionRequestId ?? null,
@@ -460,7 +460,7 @@ export async function analyzeQboSide(
           attachmentFilename: att.fileName ?? null,
           attachmentFileSize: att.fileSize ?? null,
           attachmentDownloadUrl: att.downloadUrl ?? null,
-          registerState: 'MISSING',
+          registerState: 'REVIEW_REQUIRED',
           matchedDocumentId: null,
           matchConfidence: null,
           matchFieldDetails: null,
@@ -488,7 +488,7 @@ export async function analyzeQboSide(
       attachmentFilename: att.fileName ?? null,
       attachmentFileSize: att.fileSize ?? null,
       attachmentDownloadUrl: att.downloadUrl ?? null,
-      registerState: 'MISSING',
+      registerState: 'REVIEW_REQUIRED',
       matchedDocumentId: matchingDoc?.id ?? null,
       matchConfidence: null,
       matchFieldDetails: null,
