@@ -863,12 +863,13 @@ async function upsertDocumentSideEntry(
   matchedDocumentId: string,
   realmId: string
 ): Promise<void> {
-  // Try to find existing entry with same realm_id and matched_document_id
+  // Try to find existing entry with same realm_id and matched_document_id AND null qbo_txn_id
   const { data: existing, error: selectError } = await supabaseAdmin
     .from('qbo_evidence_register')
     .select('id')
     .eq('realm_id', realmId)
     .eq('matched_document_id', matchedDocumentId)
+    .is('qbo_txn_id', null)
     .maybeSingle();
 
   if (selectError) {

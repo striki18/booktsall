@@ -1,13 +1,17 @@
 import { NextResponse, NextRequest } from 'next/server';
 import { generatePackage } from '@/lib/pipeline';
+import { getStoredToken } from '@/lib/quickbooks';
 
 /**
  * POST /api/generate
- * 
+ *
  * Generates an audit package by invoking the existing Phase 8 pipeline.
  * Request body must contain:
  *   { "companyId": "string", "startDate": "YYYY-MM-DD", "endDate": "YYYY-MM-DD" }
- * 
+ *
+ * Authentication is optional. If authenticated, ownership of the company realm is verified.
+ * If not authenticated, generation proceeds without realm restriction (companyId must still be valid).
+ *
  * Returns structured JSON with package information on success,
  * or structured error responses for validation/pipeline failures.
  */
@@ -20,7 +24,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 2. Parse and validate request body
+  // 2. Parse and validate request body (authentication made optional)
   let payload: any;
   try {
     payload = await request.json();
@@ -93,6 +97,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: 'startDate must be less than or equal to endDate' },
       { status: 400 }
+    );
+  }
+
+  // 9. Validate companyId matches the backend's connected QuickBooks realm
+  const storedToken = await getStoredToken();
+  const backendRealmId = storedToken?.realm_id;
+  if (!backendRealmId) {
+    // No QuickBooks connection stored in backend
+    return NextResponse.json(
+      { error: 'No QuickBooks connection found for this backend' },
+      { status: 403 }
+    );
+  }
+  if (companyId.trim() !== backendRealmId) {
+    // Frontend companyId does not match backend's connected realm
+    return NextResponse.json(
+      { error: 'companyId does not match connected QuickBooks realm' },
+      { status: 403 }
     );
   }
 

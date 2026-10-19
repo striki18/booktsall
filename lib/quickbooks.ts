@@ -8,24 +8,51 @@ import { withRetry, DOWNLOAD_RETRY_CONFIG, sleep } from './retry';
 
 let memoryCache: any = null;
 
+/** Per-realm mutex to prevent concurrent token refreshes (refresh token rotation safety). */
+const refreshMutexes: Map<string, Promise<string | undefined>> = new Map();
+
+/** Sentinel to indicate no refresh in progress. */
+const NO_REFRESH = Promise.resolve(undefined as string | undefined);
+
+/** Get the current refresh promise for a realmId. */
+function getRefreshPromise(realmId: string): Promise<string | undefined> {
+  const promise = refreshMutexes.get(realmId);
+  if (!promise) {
+    return NO_REFRESH;
+  }
+  return promise;
+}
+
+/** Set the refresh promise for a realmId. */
+function setRefreshPromise(realmId: string, promise: Promise<string | undefined>) {
+  refreshMutexes.set(realmId, promise);
+}
+
 /** Retrieve stored token (Supabase preferred, otherwise in‑memory). */
-export async function getStoredToken() {
+export async function getStoredToken(realmId?: string) {
   // If Supabase client is configured, query the table.
   if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-    const { data, error } = await supabase
+    let query = supabase
       .from('quickbooks_tokens')
       .select('*')
       .order('expires_at', { ascending: true })
-      .limit(1)
-      .single();
+      .limit(1);
+    if (realmId) {
+      query = query.eq('realm_id', realmId);
+    }
+    const { data, error } = await query.single();
     if (!error && data) return data;
   }
   // Fallback to in‑memory cache (useful for local dev without Supabase).
+  // For in-memory cache, if realmId is provided, check if it matches
+  if (realmId && memoryCache && memoryCache.realm_id !== realmId) {
+    return null;
+  }
   return memoryCache;
 }
 
 /** Store token (used for both initial exchange and refresh). */
-async function storeToken(tokenData: any, realmId?: string) {
+export async function storeToken(tokenData: any, realmId?: string) {
   // Determine the realm identifier to store.
   let finalRealmId = realmId ?? tokenData.realmId;
   if (!finalRealmId) {
@@ -60,7 +87,7 @@ async function storeToken(tokenData: any, realmId?: string) {
 }
 
 /** Refresh the access token using the stored refresh token. */
-async function refreshAccessToken(refreshToken: string) {
+export async function refreshAccessToken(refreshToken: string) {
   const tokenUrl = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
   const basicAuth = Buffer.from(
     `${process.env.INTUIT_CLIENT_ID}:${process.env.INTUIT_CLIENT_SECRET}`
@@ -112,9 +139,10 @@ async function refreshAccessToken(refreshToken: string) {
 }
 
 /** Get a valid access token, refreshing if needed. */
-export async function getAccessToken() {
-  const token = await getStoredToken();
+export async function getAccessToken(realmId?: string) {
+  const token = await getStoredToken(realmId);
   if (!token) throw new Error('No QuickBooks token found');
+  const resolvedRealmId = token.realm_id || realmId || '';
   const now = Math.floor(Date.now() / 1000);
   // `expires_at` may be a timestamp string, a Date object, or epoch seconds.
   let expiresAtSec: number | undefined;
@@ -128,7 +156,61 @@ export async function getAccessToken() {
   }
   if (expiresAtSec && expiresAtSec - now < 60) {
     // Refresh when less than a minute left or already expired.
-    return await refreshAccessToken(token.refresh_token);
+    // Use a shared promise per realm to ensure only ONE refresh happens at a time.
+    const refreshPromise = getRefreshPromise(resolvedRealmId);
+
+    // Check if a refresh is already in progress
+    if (refreshPromise !== NO_REFRESH) {
+      // Another refresh is in progress - wait for it to complete
+      const sharedResult = await refreshPromise;
+      if (sharedResult) return sharedResult;
+      // If undefined, the refresh failed or didn't produce a token - fall through to try our own
+    }
+
+    // We need to do the refresh ourselves (either first caller or previous refresh failed)
+    // Create a new promise that resolves with the new access token
+    const newRefreshPromise = (async () => {
+      try {
+        // Re-check token - another refresh may have already updated it while we waited
+        const freshToken = await getStoredToken(resolvedRealmId);
+        if (!freshToken) throw new Error('No QuickBooks token found');
+        const freshNow = Math.floor(Date.now() / 1000);
+        let freshExpiresAtSec: number | undefined;
+        if (typeof freshToken.expires_at === 'string') {
+          freshExpiresAtSec = Math.floor(new Date(freshToken.expires_at).getTime() / 1000);
+        } else if (freshToken.expires_at instanceof Date) {
+          freshExpiresAtSec = Math.floor(freshToken.expires_at.getTime() / 1000);
+        } else {
+          freshExpiresAtSec = freshToken.expires_at as unknown as number;
+        }
+        if (freshExpiresAtSec && freshExpiresAtSec - freshNow >= 60) {
+          // Another refresh already succeeded - use the new token
+          return freshToken.access_token;
+        }
+        // Need to do the refresh ourselves
+        const newAccessToken = await refreshAccessToken(freshToken.refresh_token);
+        return newAccessToken;
+      } catch (error) {
+        // On failure, reset the promise so subsequent callers can try again
+        refreshMutexes.set(resolvedRealmId, NO_REFRESH);
+        throw error;
+      }
+    })();
+
+    // Set this as the shared promise for all callers
+    setRefreshPromise(resolvedRealmId, newRefreshPromise);
+
+    try {
+      // Wait for the refresh to complete
+      return await newRefreshPromise;
+    } finally {
+      // After refresh completes (success or failure), reset to NO_REFRESH
+      // so future expired-token calls can start a new refresh
+      const currentPromise = refreshMutexes.get(resolvedRealmId);
+      if (currentPromise === newRefreshPromise) {
+        refreshMutexes.set(resolvedRealmId, NO_REFRESH);
+      }
+    }
   }
   return token.access_token;
 }

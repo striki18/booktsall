@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { cookies } from 'next/headers';
 
 /**
@@ -88,6 +89,19 @@ export async function GET(request: Request) {
     if (error) {
       console.error('Supabase upsert error:', error);
       return NextResponse.json({ error: 'Database error' }, { status: 500 });
+    }
+
+    // Store realm_id in user metadata for session-based realm resolution
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        await supabaseAdmin.auth.admin.updateUserById(user.id, {
+          user_metadata: { ...user.user_metadata, realm_id: realmId },
+        });
+      }
+    } catch (metaError) {
+      // Non-fatal: log but don't block the OAuth flow
+      console.warn('Failed to update user metadata with realm_id:', metaError);
     }
 
     // Clear cookies

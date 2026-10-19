@@ -10,6 +10,7 @@ import {
   getAttachables,
   normalizeTransactionList,
   normalizeAttachables,
+  downloadFile,
 } from './quickbooks';
 
 import {
@@ -55,6 +56,40 @@ export interface PipelineProgress {
   message: string;
   timestamp: string;
   counts?: Record<string, number>;
+}
+
+/**
+ * Sanitize a filename by replacing invalid characters with underscores.
+ * Handles path separators and Windows/Linux invalid filename characters.
+ */
+function sanitizeFileName(fileName: string): string {
+  return fileName.replace(/[\\/:*?"<>|]/g, '_');
+}
+
+/**
+ * Build a deterministic ZIP filename for a QBO-side-only attachment.
+ * Uses available transaction metadata and the original attachment filename.
+ * Format: {txnType}_{txnId}_{vendor}_{date}_{sanitizedFilename}
+ * Missing fields are omitted (not invented).
+ */
+function buildQboZipFileName(
+  entry: {
+    txnType: string | null;
+    qboTxnId: string | null;
+    vendor: string | null;
+    date: string | null;
+  },
+  sanitizedFileName: string
+): string {
+  const parts: string[] = [];
+
+  if (entry.txnType) parts.push(entry.txnType);
+  if (entry.qboTxnId) parts.push(entry.qboTxnId);
+  if (entry.vendor) parts.push(sanitizeFileName(entry.vendor));
+  if (entry.date) parts.push(entry.date.replace(/-/g, '')); // YYYYMMDD format
+
+  const prefix = parts.length > 0 ? parts.join('_') + '_' : '';
+  return `${prefix}${sanitizedFileName}`;
 }
 
 /**
@@ -481,7 +516,133 @@ export async function generatePackage(
     stats.successfulDownloadCount = downloadResult.successfulCount;
     stats.failedDownloadCount = downloadResult.failedCount;
 
-    const successfulEvidenceFiles = downloadResult.successful;
+    let successfulEvidenceFiles = downloadResult.successful;
+
+    // ========================================================================
+    // STAGE 4b: QBO-Side-Only Attachment Download
+    // ========================================================================
+
+    // Identify QBO-side-only attachments: registerState in MATCHED/WRONG_MATCHED/REVIEW_REQUIRED,
+    // attachableId is non-null, matchedDocumentId is null
+    const qboSideOnlyCandidates = register.filter(
+      (e) =>
+        (e.registerState === 'MATCHED' ||
+          e.registerState === 'WRONG_MATCHED' ||
+          e.registerState === 'REVIEW_REQUIRED') &&
+        e.attachableId !== null &&
+        e.attachableId !== undefined &&
+        (e.matchedDocumentId === null || e.matchedDocumentId === undefined)
+    );
+
+    // Deduplicate by attachableId
+    const uniqueQboAttachables = new Map<string, typeof qboSideOnlyCandidates[0]>();
+    for (const candidate of qboSideOnlyCandidates) {
+      if (candidate.attachableId && !uniqueQboAttachables.has(candidate.attachableId)) {
+        uniqueQboAttachables.set(candidate.attachableId, candidate);
+      }
+    }
+
+    const qboAttachablesToDownload = Array.from(uniqueQboAttachables.values());
+
+    if (qboAttachablesToDownload.length > 0) {
+      logProgress(
+        'QBO-Side-Only Attachment Download',
+        'started',
+        `Downloading ${qboAttachablesToDownload.length} QBO-side-only attachments`
+      );
+
+      // Create temporary directory for downloads
+      const os = await import('os');
+      const path = await import('path');
+      const fs = await import('fs');
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'auditready-qbo-attachments-'));
+
+      let qboSuccessCount = 0;
+      let qboFailedCount = 0;
+      const qboFailedDownloads: { attachableId: string; error: string }[] = [];
+
+      try {
+        for (const entry of qboAttachablesToDownload) {
+          const attachableId = entry.attachableId!;
+          const originalFileName = entry.fileName || `attachment_${attachableId}`;
+
+          try {
+            // Download using existing downloadFile helper
+            const result = await downloadFile(attachableId, originalFileName, tempDir);
+
+            if (result.success && result.filePath) {
+              // Read the downloaded file into Buffer
+              const buffer = fs.readFileSync(result.filePath);
+
+              if (buffer.length > 0) {
+                // Build safe deterministic ZIP filename from transaction metadata + original filename
+                const sanitizedFileName = sanitizeFileName(originalFileName);
+                const zipFileName = buildQboZipFileName(entry, sanitizedFileName);
+
+                // Add to successfulEvidenceFiles with synthetic matchedDocumentId
+                successfulEvidenceFiles.push({
+                  matchedDocumentId: `qbo-${attachableId}`,
+                  fileName: zipFileName,
+                  buffer,
+                });
+
+                qboSuccessCount++;
+              } else {
+                console.warn(`Empty file downloaded for attachable ${attachableId}`);
+                qboFailedCount++;
+                qboFailedDownloads.push({ attachableId, error: 'Empty file downloaded' });
+              }
+            } else {
+              const errorMsg = result.error || 'Download failed';
+              console.warn(`Failed to download attachable ${attachableId}: ${errorMsg}`);
+              qboFailedCount++;
+              qboFailedDownloads.push({ attachableId, error: errorMsg });
+            }
+          } catch (downloadError: unknown) {
+            const errorMsg = downloadError instanceof Error ? downloadError.message : String(downloadError);
+            console.warn(`Exception downloading attachable ${attachableId}: ${errorMsg}`);
+            qboFailedCount++;
+            qboFailedDownloads.push({ attachableId, error: errorMsg });
+          }
+        }
+
+        // Update stats with QBO-side downloads
+        stats.successfulDownloadCount += qboSuccessCount;
+        stats.failedDownloadCount += qboFailedCount;
+
+        logProgress(
+          'QBO-Side-Only Attachment Download',
+          'completed',
+          `Downloaded ${qboSuccessCount} successful, ${qboFailedCount} failed`,
+          {
+            successfulCount: qboSuccessCount,
+            failedCount: qboFailedCount,
+          }
+        );
+
+        // Report failed downloads
+        if (qboFailedDownloads.length > 0) {
+          console.log('\n--- QBO-Side-Only Attachment Download Failures ---');
+          for (const failure of qboFailedDownloads) {
+            console.log(`  Attachable ID: ${failure.attachableId} | Error: ${failure.error}`);
+          }
+          console.log('----------------------------------------------------\n');
+        }
+      } finally {
+        // Clean up temporary directory
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        } catch (cleanupError) {
+          console.warn(`Failed to clean up temp directory ${tempDir}:`, cleanupError);
+        }
+      }
+    } else {
+      logProgress(
+        'QBO-Side-Only Attachment Download',
+        'completed',
+        'No QBO-side-only attachments to download'
+      );
+    }
 
     logProgress(
       'Evidence Document Download',
