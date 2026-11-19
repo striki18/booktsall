@@ -1,6 +1,10 @@
 import { NextResponse, NextRequest } from 'next/server';
+import { readFile } from 'node:fs/promises';
+import { basename } from 'node:path';
+import { persistPipelinePackage } from '@/lib/package-persistence';
 import { generatePackage } from '@/lib/pipeline';
 import { getStoredToken } from '@/lib/quickbooks';
+import { requireAuth } from '@/lib/auth';
 
 /**
  * POST /api/generate
@@ -9,8 +13,7 @@ import { getStoredToken } from '@/lib/quickbooks';
  * Request body must contain:
  *   { "companyId": "string", "startDate": "YYYY-MM-DD", "endDate": "YYYY-MM-DD" }
  *
- * Authentication is optional. If authenticated, ownership of the company realm is verified.
- * If not authenticated, generation proceeds without realm restriction (companyId must still be valid).
+ * A signed-in user may generate a package only for their authorized QuickBooks realm.
  *
  * Returns structured JSON with package information on success,
  * or structured error responses for validation/pipeline failures.
@@ -100,24 +103,37 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 9. Validate companyId matches the backend's connected QuickBooks realm
-  const storedToken = await getStoredToken();
-  const backendRealmId = storedToken?.realm_id;
-  if (!backendRealmId) {
-    // No QuickBooks connection stored in backend
-    return NextResponse.json(
-      { error: 'No QuickBooks connection found for this backend' },
-      { status: 403 }
-    );
+  // 9. Require an authenticated session and scope the request to its realm.
+  let authenticatedRealmId: string;
+  let authenticatedUserId: string;
+  try {
+    const auth = await requireAuth();
+    authenticatedRealmId = auth.realmId;
+    authenticatedUserId = auth.user.id;
+  } catch (error) {
+    const authError = error instanceof Error ? error.message : '';
+    const status = authError === 'UNAUTHORIZED' ? 401 : 403;
+    const message = authError === 'UNAUTHORIZED'
+      ? 'Authentication required'
+      : 'No authorized QuickBooks company is connected';
+    return NextResponse.json({ error: message }, { status });
   }
-  if (companyId.trim() !== backendRealmId) {
-    // Frontend companyId does not match backend's connected realm
+
+  if (companyId.trim() !== authenticatedRealmId) {
     return NextResponse.json(
       { error: 'companyId does not match connected QuickBooks realm' },
       { status: 403 }
     );
   }
 
+  // Never select a different company's token through the unscoped fallback.
+  const storedToken = await getStoredToken(authenticatedRealmId);
+  if (storedToken?.realm_id !== authenticatedRealmId) {
+    return NextResponse.json(
+      { error: 'No QuickBooks connection found for this backend' },
+      { status: 403 }
+    );
+  }
   // All validation passed - invoke the existing Phase 8 generatePackage()
   try {
     const result = await generatePackage(companyId.trim(), startDate, endDate);
@@ -140,11 +156,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    let persistedPackage;
+    try {
+      persistedPackage = await persistPipelinePackage({
+        realmId: authenticatedRealmId,
+        createdBy: authenticatedUserId,
+        startDate,
+        endDate,
+        filename: basename(result.zipPath || 'AuditPackage.zip'),
+        zipBuffer: await readFile(result.zipPath!),
+        status: result.completionStatus ?? (result.stats.failedDownloadCount > 0 ? 'partial' : 'complete'),
+        stats: result.stats,
+      });
+    } catch (error) {
+      console.error('Generated package persistence failed:', error instanceof Error ? error.message : 'Unknown error');
+      return NextResponse.json({ success: false, error: { stage: 'Package Persistence', reason: 'Generated package could not be stored' }, stats: result.stats }, { status: 500 });
+    }
     // Success - return structured response with package information
     return NextResponse.json({
       success: true,
-      packagePath: result.zipPath,
-      packageName: result.zipPath ? result.zipPath.split('/').pop() || result.zipPath.split('\\').pop() : undefined,
+      completionStatus: result.completionStatus ?? (result.stats.failedDownloadCount > 0 ? 'partial' : 'complete'),
+      packageId: persistedPackage.id,
+      packagePath: persistedPackage.zip_path,
+      packageName: persistedPackage.filename,
       stats: result.stats,
     });
 

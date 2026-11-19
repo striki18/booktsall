@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { requireAuthContext } from '@/lib/auth';
 
 /**
  * GET /api/evidence/catalog – returns the master Evidence Catalog.
@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabase';
  */
 export async function GET() {
   try {
+    const { supabase } = await requireAuthContext();
     const { data, error } = await supabase
       .from('audit_evidence_catalog')
       .select('*')

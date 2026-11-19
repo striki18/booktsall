@@ -1,6 +1,15 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
-import { getCompanyInfo } from '@/lib/quickbooks';
+import { requireAuthContext } from '@/lib/auth';
+function authFailure(error: unknown) {
+  const code = error instanceof Error ? error.message : '';
+  if (code === 'UNAUTHORIZED') {
+    return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+  }
+  if (code === 'NO_REALM_ID' || code === 'FORBIDDEN') {
+    return NextResponse.json({ error: 'No authorized QuickBooks company is connected' }, { status: 403 });
+  }
+  return null;
+}
 
 /** POST /api/engagements – create a new audit engagement */
 export async function POST(request: Request) {
@@ -20,6 +29,7 @@ export async function POST(request: Request) {
         throw new Error('Invalid JSON payload');
       }
     }
+    const { realmId: authenticatedRealmId, supabase } = await requireAuthContext();
     const {
       realm_id,
       company_name,
@@ -30,6 +40,9 @@ export async function POST(request: Request) {
 
     if (!realm_id || !company_name || !audit_type || !start_date || !end_date) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+    if (realm_id !== authenticatedRealmId) {
+      return NextResponse.json({ error: 'realm_id is not authorized for this account' }, { status: 403 });
     }
 
     // Check for existing draft engagement with same parameters to avoid duplicates.
@@ -119,48 +132,28 @@ export async function POST(request: Request) {
     // Return the newly created engagement.
     return NextResponse.json(newEngagement);
   } catch (e: any) {
+    const authResponse = authFailure(e);
+    if (authResponse) return authResponse;
     console.error('Create engagement error:', e);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
 
-/** GET /api/engagements – list all audit engagements */
+/** GET /api/engagements – list engagements for the authenticated company */
 export async function GET() {
   try {
-    // Fetch all engagements ordered by creation time (oldest first)
+    const { realmId, supabase } = await requireAuthContext();
     const { data, error } = await supabase
       .from('audit_engagements')
       .select('*')
+      .eq('realm_id', realmId)
       .order('created_at', { ascending: true });
     if (error) throw error;
-    if (Array.isArray(data) && data.length > 0) {
-      const [oldest, ...duplicates] = data;
-      // Delete any duplicate rows, keeping the oldest.
-      if (duplicates.length > 0) {
-        const idsToDelete = duplicates.map((row: any) => row.id);
-        await supabase.from('audit_engagements').delete().in('id', idsToDelete);
-      }
-      // Ensure the company_name matches the current QuickBooks company name.
-      try {
-        const qbInfo = await getCompanyInfo();
-        const correctName = qbInfo?.CompanyInfo?.CompanyName;
-        if (correctName && oldest.company_name !== correctName) {
-          const { error: updErr } = await supabase
-            .from('audit_engagements')
-            .update({ company_name: correctName })
-            .eq('id', oldest.id);
-          if (updErr) throw updErr;
-          oldest.company_name = correctName;
-        }
-      } catch (e) {
-        console.error('Failed to sync company name from QuickBooks:', e);
-      }
-      return NextResponse.json([oldest]);
-    }
-    // No engagements exist
-    return NextResponse.json([]);
-  } catch (e: any) {
-    console.error('Fetch engagements error:', e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return NextResponse.json(data || []);
+  } catch (error: any) {
+    const authResponse = authFailure(error);
+    if (authResponse) return authResponse;
+    console.error('Fetch engagements error:', error);
+    return NextResponse.json({ error: 'Failed to fetch engagements' }, { status: 500 });
   }
 }

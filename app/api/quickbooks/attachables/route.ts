@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
 import { getAttachables, normalizeAttachables } from '@/lib/quickbooks';
 
 /**
@@ -7,17 +8,16 @@ import { getAttachables, normalizeAttachables } from '@/lib/quickbooks';
  */
 export async function GET(request: Request) {
   try {
-    // No query parameters needed – simply retrieve all attachables for the stored realm.
-  const raw = await getAttachables();
-  console.log('🔍 Attachables raw response length:', raw?.attachables?.length);
+    const { realmId } = await requireAuth();
+    // Read only the authenticated company.
+  const raw = await getAttachables(realmId);
   // Normalize the attachable records as required by Phase 3C.
   const normalized = normalizeAttachables(raw?.attachables ?? []);
-  console.log('🔍 Normalized attachables count:', normalized?.length);
-  console.log('🔍 First normalized item:', JSON.stringify(normalized?.[0] || {}));
   // Return the normalized attachable records.
   return NextResponse.json(normalized);
   } catch (e: any) {
-    console.error('Attachables endpoint error:', e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    console.error('Attachables endpoint error');
+    const status = e.message === 'UNAUTHORIZED' ? 401 : e.message === 'NO_REALM_ID' || e.message === 'FORBIDDEN' ? 403 : 500;
+    return NextResponse.json({ error: status === 500 ? 'QuickBooks request failed' : e.message }, { status });
   }
 };

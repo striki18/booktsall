@@ -21,17 +21,15 @@ export async function getServerAuth() {
               cookieStore.set(name, value, options)
             );
           } catch {
-            // The `setAll` method was called from a Server Component.
-            // This can be ignored if you have middleware refreshing
-            // user sessions.
+            // Cookie writes are unavailable in some Server Component contexts.
           }
         },
       },
     }
   );
 
-  const { data: { session } } = await supabase.auth.getSession();
-  return { supabase, session };
+  const { data: { user }, error } = await supabase.auth.getUser();
+  return { supabase, user: error ? null : user, error };
 }
 
 /**
@@ -39,46 +37,44 @@ export async function getServerAuth() {
  * Returns null if no valid session exists.
  */
 export async function getCurrentUser() {
-  const { session } = await getServerAuth();
-  return session?.user ?? null;
+  const { user } = await getServerAuth();
+  return user ?? null;
 }
 
 /**
  * Get the realm ID for the current authenticated user.
- * Returns null if no session or no realm_id in user metadata.
+ * Returns null if no session or no server-controlled company binding.
  */
 export async function getUserRealmId(): Promise<string | null> {
   const user = await getCurrentUser();
   if (!user) return null;
-  
-  // Check user metadata for realm_id (set during OAuth callback)
-  return (user.user_metadata?.realm_id as string) || (user.app_metadata?.realm_id as string) || null;
+
+  // Company ownership is written by the server into app_metadata, which users cannot edit.
+  return (user.app_metadata?.realm_id as string) || null;
+}
+
+export async function requireUser(): Promise<any> {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('UNAUTHORIZED');
+  return user;
 }
 
 /**
  * Verify the user is authenticated and optionally owns the given realm.
  * Throws if authentication fails or authorization fails.
  */
+export async function requireAuthContext(options?: { realmId?: string }) {
+  const { supabase, user } = await getServerAuth();
+  if (!user) throw new Error('UNAUTHORIZED');
+
+  const realmId = (user.app_metadata?.realm_id as string) || null;
+  if (!realmId) throw new Error('NO_REALM_ID');
+  if (options?.realmId && options.realmId !== realmId) throw new Error('FORBIDDEN');
+
+  return { supabase, user, realmId };
+}
+
 export async function requireAuth(options?: { realmId?: string }): Promise<{ user: any; realmId: string }> {
-  const user = await getCurrentUser();
-  
-  if (!user) {
-    throw new Error('UNAUTHORIZED');
-  }
-  
-  let realmId = options?.realmId ?? await getUserRealmId();
-  
-  if (!realmId) {
-    throw new Error('NO_REALM_ID');
-  }
-  
-  // If realmId was explicitly provided, verify ownership
-  if (options?.realmId) {
-    const userRealmId = await getUserRealmId();
-    if (userRealmId && userRealmId !== options.realmId) {
-      throw new Error('FORBIDDEN');
-    }
-  }
-  
+  const { user, realmId } = await requireAuthContext(options);
   return { user, realmId };
 }

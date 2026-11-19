@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
 import { getTransactions } from '@/lib/quickbooks';
 
 /**
@@ -8,25 +9,21 @@ import { getTransactions } from '@/lib/quickbooks';
  */
 export async function GET(request: Request) {
   try {
+    const { realmId } = await requireAuth();
     const url = new URL(request.url);
     const startDate = url.searchParams.get('startDate') ?? '2023-01-01';
     const endDate = url.searchParams.get('endDate') ?? '2023-01-31';
 
-  // `getTransactions` fetches the raw TransactionList report, normalizes it,
-  // and logs the normalized result. It returns the raw report, so we invoke
-  // the normalization function here to return the clean flat array as required
-  // by Phase 2C.
-  const rawReport = await getTransactions(startDate, endDate);
+  // Normalize the report for the API response without logging transaction data.
+  const rawReport = await getTransactions(startDate, endDate, realmId);
   // Import the normalization helper directly to avoid an extra round‑trip.
   // The function is exported from `lib/quickbooks.ts`.
   const { normalizeTransactionList } = await import("@/lib/quickbooks");
   const normalized = normalizeTransactionList(rawReport);
-  // The normalization function already logs the result, but we also log here
-  // for explicit visibility of the API response.
-  console.log("🔍 API response – normalized TransactionList:", JSON.stringify(normalized, null, 2));
   return NextResponse.json(normalized);
   } catch (e: any) {
-    console.error('TransactionReport error:', e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    console.error('TransactionReport error');
+    const status = e.message === 'UNAUTHORIZED' ? 401 : e.message === 'NO_REALM_ID' || e.message === 'FORBIDDEN' ? 403 : 500;
+    return NextResponse.json({ error: status === 500 ? 'QuickBooks request failed' : e.message }, { status });
   }
 }

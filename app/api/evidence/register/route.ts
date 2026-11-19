@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
 import { getTransactions, normalizeTransactionList } from '@/lib/quickbooks';
 import { getAttachables, normalizeAttachables } from '@/lib/quickbooks';
-import { buildEvidenceRegister } from '@/lib/evidence';
+import { applyStoredEvidenceReviewDecisions, buildQboEvidenceRegister } from '@/lib/qbo-evidence-register';
 
 /**
  * GET /api/evidence/register?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
@@ -12,6 +13,7 @@ import { buildEvidenceRegister } from '@/lib/evidence';
  */
 export async function GET(request: Request) {
   try {
+    const { realmId } = await requireAuth();
     const { searchParams } = new URL(request.url);
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
@@ -20,19 +22,27 @@ export async function GET(request: Request) {
     }
 
     // 1. Fetch raw data
-    const rawTxns = await getTransactions(startDate, endDate);
-    const rawAttach = await getAttachables();
+    const rawTxns = await getTransactions(startDate, endDate, realmId);
+    const rawAttach = await getAttachables(realmId);
 
     // 2. Normalize
     const txns = normalizeTransactionList(rawTxns);
     const attach = normalizeAttachables(rawAttach);
 
-    // 3. Build register
-    const register = buildEvidenceRegister(txns, attach);
+    // Build the evidence-aware register and overlay durable human decisions.
+    const computedRegister = await buildQboEvidenceRegister({
+      realmId,
+      startDate,
+      endDate,
+      transactions: txns,
+      attachables: attach,
+    });
+    const register = await applyStoredEvidenceReviewDecisions(computedRegister, realmId);
 
     return NextResponse.json(register);
   } catch (e: any) {
-    console.error('Evidence register error:', e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    console.error('Evidence register error');
+    const status = e.message === 'UNAUTHORIZED' ? 401 : e.message === 'NO_REALM_ID' || e.message === 'FORBIDDEN' ? 403 : 500;
+    return NextResponse.json({ error: status === 500 ? 'Evidence register request failed' : e.message }, { status });
   }
 }

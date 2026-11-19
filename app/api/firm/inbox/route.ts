@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomBytes } from 'node:crypto';
+import { requireAuth } from '@/lib/auth';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -67,81 +69,47 @@ async function supabaseQuery(table: string, options: {
   return { data, error: null };
 }
 
-// Generate a unique token for the company inbox
+
+function authFailure(error: unknown) {
+  const code = error instanceof Error ? error.message : '';
+  if (code === 'UNAUTHORIZED') return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+  if (code === 'NO_REALM_ID' || code === 'FORBIDDEN') return NextResponse.json({ error: 'No authorized QuickBooks company is connected' }, { status: 403 });
+  return null;
+}
+// Generate an unguessable token for the company inbox
 function generateToken(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let token = '';
-  for (let i = 0; i < 32; i++) {
-    token += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return token;
+  return randomBytes(32).toString('base64url');
 }
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    const { searchParams } = new URL(request.url);
-    const realm_id = searchParams.get('realm_id');
-
-    if (!realm_id) {
-      return NextResponse.json({ error: 'realm_id is required' }, { status: 400 });
-    }
-
-    // Get inbox info
-    const { data: inbox, error: inboxError } = await supabaseQuery('company_inboxes', {
-      filter: { realm_id },
-      single: true,
+    const { realmId } = await requireAuth();
+    const realm_id = realmId;
+    const { data: inbox } = await supabaseQuery('company_inboxes', { filter: { realm_id }, single: true });
+    const { data: requests } = await supabaseQuery('collection_requests', {
+      filter: { realm_id }, order: { column: 'created_at', ascending: false },
     });
-
-    if (inboxError && inboxError.code !== 'PGRST116') {
-      console.error('Error fetching inbox:', inboxError);
-      return NextResponse.json({ error: 'Failed to fetch inbox' }, { status: 500 });
-    }
-
-    // Get collection requests
-    const { data: requests, error: requestsError } = await supabaseQuery('collection_requests', {
-      filter: { realm_id },
-      order: { column: 'created_at', ascending: false },
+    const { data: documents } = await supabaseQuery('inbox_documents', {
+      filter: { realm_id }, order: { column: 'uploaded_at', ascending: false },
     });
-
-    if (requestsError) {
-      console.error('Error fetching collection requests:', requestsError);
-      return NextResponse.json({ error: 'Failed to fetch collection requests' }, { status: 500 });
-    }
-
-    // Get uploaded documents
-    const { data: documents, error: docsError } = await supabaseQuery('inbox_documents', {
-      filter: { realm_id },
-      order: { column: 'uploaded_at', ascending: false },
-    });
-
-    if (docsError) {
-      console.error('Error fetching inbox documents:', docsError);
-      return NextResponse.json({ error: 'Failed to fetch documents' }, { status: 500 });
-    }
-
     const inboxLink = inbox
       ? `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/inbox/${inbox.token}`
       : null;
-
     return NextResponse.json({
-      inbox: inbox ? {
-        id: inbox.id,
-        realm_id: inbox.realm_id,
-        token: inbox.token,
-        link: inboxLink,
-        created_at: inbox.created_at,
-      } : null,
-      requests: requests || [],
-      documents: documents || [],
+      inbox: inbox ? { id: inbox.id, realm_id: inbox.realm_id, token: inbox.token, link: inboxLink, created_at: inbox.created_at } : null,
+      requests: requests || [], documents: documents || [],
     });
   } catch (error) {
-    console.error('Firm inbox GET error:', error);
+    const response = authFailure(error);
+    if (response) return response;
+    console.error('Firm inbox GET error:', error instanceof Error ? error.message : 'Unknown error');
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
-
 export async function POST(request: NextRequest) {
   try {
+    const { realmId: authorizedRealmId } = await requireAuth();
+
     // Parse and validate JSON body
     let body: { realm_id?: string; transaction_ids?: string[] };
     try {
@@ -155,6 +123,10 @@ export async function POST(request: NextRequest) {
     // Validate realm_id
     if (!realm_id || typeof realm_id !== 'string' || realm_id.trim() === '') {
       return NextResponse.json({ error: 'realm_id is required and must be non-empty' }, { status: 400 });
+    }
+
+    if (realm_id !== authorizedRealmId) {
+      return NextResponse.json({ error: 'realm_id is not authorized for this account' }, { status: 403 });
     }
 
     // Determine transaction_ids: if provided, validate them; otherwise fetch from qbo_evidence_register
@@ -199,12 +171,10 @@ export async function POST(request: NextRequest) {
 
     // Find or create company inbox
     let inbox;
-    console.log('[POST /api/firm/inbox] Fetching company inbox for realm_id:', realm_id);
     const { data: existingInbox, error: inboxError } = await supabaseQuery('company_inboxes', {
       filter: { realm_id },
       single: true,
     });
-    console.log('[POST /api/firm/inbox] Inbox fetch result:', { existingInbox, inboxError });
 
     if (inboxError && inboxError.code !== 'PGRST116') {
       console.error('Error fetching company inbox:', inboxError);
@@ -256,7 +226,38 @@ export async function POST(request: NextRequest) {
       link: inboxLink,
     }, { status: 201 });
   } catch (error) {
-    console.error('Firm inbox POST error:', error);
+    const response = authFailure(error);
+    if (response) return response;
+    console.error('Firm inbox POST error:', error instanceof Error ? error.message : 'Unknown error');
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+export async function PATCH() {
+  try {
+    const { realmId } = await requireAuth();
+    const token = generateToken();
+    const { data: inbox, error } = await supabaseQuery('company_inboxes', {
+      method: 'PATCH',
+      filter: { realm_id: realmId },
+      select: 'id,realm_id,token,created_at',
+      body: { token },
+      single: true,
+    });
+
+    if (error?.code === 'PGRST116' || !inbox) {
+      return NextResponse.json({ error: 'Company inbox not found' }, { status: 404 });
+    }
+    if (error) {
+      console.error('Firm inbox token rotation failed:', error.message);
+      return NextResponse.json({ error: 'Failed to rotate inbox link' }, { status: 500 });
+    }
+
+    const inboxLink = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/inbox/${inbox.token}`;
+    return NextResponse.json({ inbox, link: inboxLink }, { status: 200 });
+  } catch (error) {
+    const response = authFailure(error);
+    if (response) return response;
+    console.error('Firm inbox token rotation failed:', error instanceof Error ? error.message : 'Unknown error');
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

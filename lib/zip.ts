@@ -7,10 +7,11 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'node:crypto';
 import * as archiver from 'archiver';
 
 import { getCompanyOutputDir } from './output';
-import { extractZipFile, listZipContents } from './zip-utils';
+import { extractZipFile, extractZipFileBuffer, listZipContents } from './zip-utils';
 
 /**
  * Sanitize a string for use in filesystem paths.
@@ -42,6 +43,13 @@ interface ClientEvidenceFile {
   buffer: Buffer;
 }
 
+export interface PackageDownloadFailure {
+  source: 'client_upload' | 'quickbooks';
+  referenceId: string;
+  fileName: string;
+  reason: string;
+}
+
 /**
  * Generate a ZIP package containing:
  * - evidence_register.csv
@@ -55,7 +63,8 @@ export async function generateZip(
   companyName: string,
   startDate: string,
   endDate: string,
-  successfulEvidenceFiles: ClientEvidenceFile[] = []
+  successfulEvidenceFiles: ClientEvidenceFile[] = [],
+  failedDownloads: PackageDownloadFailure[] = [],
 ): Promise<string> {
   const zipFilename = generateZipFilename(
     companyName,
@@ -144,6 +153,7 @@ export async function generateZip(
     }
 
     const usedNames = new Set<string>();
+    const includedFiles: Array<{ evidenceRef: string; path: string; size: number; sha256: string }> = [];
 
     for (const evidence of uniqueDocuments.values()) {
       const originalName = path.basename(evidence.fileName);
@@ -174,10 +184,18 @@ export async function generateZip(
 
       usedNames.add(zipName);
 
-      archive.append(evidence.buffer, {
-        name: `attachments/${zipName}`,
-      });
+      const archivePath = `attachments/${zipName}`;
+      archive.append(evidence.buffer, { name: archivePath });
+      includedFiles.push({ evidenceRef: evidence.matchedDocumentId, path: archivePath, size: evidence.buffer.length, sha256: createHash('sha256').update(evidence.buffer).digest('hex') });
     }
+
+    archive.append(JSON.stringify({
+      schemaVersion: 1,
+      status: failedDownloads.length > 0 ? 'partial' : 'complete',
+      expectedAttachmentCount: includedFiles.length + failedDownloads.length,
+      includedFiles,
+      failedFiles: failedDownloads,
+    }, null, 2), { name: 'package_manifest.json' });
 
     archive.finalize().catch(fail);
   });
@@ -193,6 +211,10 @@ export interface ZipVerificationResult {
   attachmentsPresent: boolean;
   evidenceRegisterPresent: boolean;
   missingDocumentsPresent: boolean;
+  packageManifestPresent: boolean;
+  manifestReadable: boolean;
+  manifestFilesPresent: boolean;
+  manifestHashesValid: boolean;
   attachmentsNonEmpty: boolean;
   csvReadable: boolean;
   noExpectedFilesMissing: boolean;
@@ -214,6 +236,10 @@ export async function verifyZip(
     attachmentsPresent: false,
     evidenceRegisterPresent: false,
     missingDocumentsPresent: false,
+    packageManifestPresent: false,
+    manifestReadable: false,
+    manifestFilesPresent: false,
+    manifestHashesValid: false,
     attachmentsNonEmpty: true,
     csvReadable: true,
     noExpectedFilesMissing: false,
@@ -276,6 +302,43 @@ export async function verifyZip(
       !c.name.endsWith('/')
   );
 
+  const packageManifestFound = contents.some((entry) => entry.name === 'package_manifest.json');
+  result.packageManifestPresent = packageManifestFound;
+  if (packageManifestFound) {
+    try {
+      const manifest = JSON.parse(await extractZipFile(zipPath, 'package_manifest.json'));
+      if (manifest?.schemaVersion !== 1 || !Array.isArray(manifest.includedFiles) || !Array.isArray(manifest.failedFiles)) {
+        throw new Error('Package manifest schema is invalid');
+      }
+      result.manifestReadable = true;
+      const foundNames = new Set(contents.map((entry) => entry.name));
+      result.manifestFilesPresent = manifest.includedFiles.every((file: any) => typeof file.path === 'string' && foundNames.has(file.path));
+      if (!result.manifestFilesPresent) result.errors.push('One or more manifest evidence files are missing from ZIP');
+      result.manifestHashesValid = true;
+      for (const file of manifest.includedFiles) {
+        const bytes = await extractZipFileBuffer(zipPath, file.path);
+        if (bytes.length !== file.size || createHash('sha256').update(bytes).digest('hex') !== file.sha256) {
+          result.manifestHashesValid = false;
+          result.errors.push(`Evidence file hash or size mismatch: ${file.path}`);
+        }
+      }
+      const expectedStatus = manifest.failedFiles.length > 0 ? 'partial' : 'complete';
+      if (manifest.status !== expectedStatus || manifest.expectedAttachmentCount !== manifest.includedFiles.length + manifest.failedFiles.length) {
+        result.manifestReadable = false;
+        result.errors.push('Package manifest status or attachment count is inconsistent');
+      }
+      const listedPaths = new Set(manifest.includedFiles.map((file: any) => file.path));
+      if (attachmentFiles.some((file) => !listedPaths.has(file.name))) {
+        result.manifestFilesPresent = false;
+        result.errors.push('ZIP contains evidence attachments absent from package manifest');
+      }
+    } catch (e) {
+      result.manifestReadable = false;
+      result.errors.push(`Failed to verify package_manifest.json: ${e}`);
+    }
+  } else {
+    result.errors.push('package_manifest.json not found in ZIP');
+  }
   result.evidenceRegisterPresent = evidenceRegisterFound;
   result.missingDocumentsPresent = missingDocumentsFound;
   result.attachmentsPresent = attachmentFiles.length > 0;
@@ -349,11 +412,12 @@ export async function verifyZip(
    * The ZIP now contains selected client evidence, not every file
    * from a local/global attachments directory.
    *
-   * Therefore the only universally expected files are the two CSVs.
+   * These two CSVs and the package manifest are always expected.
    */
   const expectedFiles = new Set([
     'evidence_register.csv',
     'missing_documents.csv',
+    'package_manifest.json',
   ]);
 
   const foundFiles = new Set(contents.map((c) => c.name));

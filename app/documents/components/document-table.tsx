@@ -43,7 +43,7 @@ export function DocumentTable({
                   {formatUploadDate(document.uploadedAt)}
                 </td>
                 <td className="px-4 py-4">
-                  <span className="rounded-full bg-[#eef4f2] px-3 py-1 text-xs font-semibold text-[#345d57]">
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${document.status === "failed" ? "bg-[#fff1f1] text-[#8a2d2d]" : "bg-[#eef4f2] text-[#345d57]"}`} title={document.processingError ?? undefined}>
                     {document.status}
                   </span>
                 </td>

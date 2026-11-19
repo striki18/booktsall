@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AuditReady",
-  description: "Prepare audit, close, and diligence workspaces.",
+  title: "Zevidt — money, made clearer",
+  description: "One clear place to collect documents, understand what is missing, and prepare reliable finance packages.",
 };
 
 export default function RootLayout({

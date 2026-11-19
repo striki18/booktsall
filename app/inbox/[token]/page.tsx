@@ -16,6 +16,8 @@ interface UploadedFile {
   content_type: string;
   file_size: number;
   uploaded_at: string;
+  processing_status?: 'pending' | 'processing' | 'processed' | 'failed';
+  processing_error?: string | null;
 }
 
 export default function InboxPage({
@@ -62,25 +64,7 @@ export default function InboxPage({
     fetchInbox();
   }, [token]);
 
-  useEffect(() => {
-    if (!token) return;
-    const fetchDocuments = async () => {
-      try {
-        const res = await fetch(`/api/inbox/${token}/documents`);
-        if (!res.ok) {
-          return;
-        }
-        const data = await res.json();
-        if (data.documents) {
-          setUploadedFiles(data.documents);
-        }
-      } catch (e) {
-        // Silently fail - documents are optional
-        console.error('Failed to fetch documents:', e);
-      }
-    };
-    fetchDocuments();
-  }, [token]);
+
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -170,10 +154,14 @@ export default function InboxPage({
   return (
     <div className={styles.container}>
       <div className={styles.card}>
+        <div className="mb-7 flex items-center justify-center gap-2 text-xl font-semibold tracking-[-.05em] text-[#17231f]">
+          <span className="grid size-8 place-items-center rounded-xl bg-[#176b52] text-lg font-bold text-white">z</span>
+          <span>zevidt</span>
+        </div>
         <div className={styles.header}>
-          <h1>Document Upload</h1>
+          <h1>Send your documents</h1>
           <p className={styles.subtitle}>
-            Upload supporting documents for QuickBooks company <strong>{inbox.realm_id}</strong>
+            Upload the files requested by your team. No account needed.
           </p>
         </div>
 
@@ -227,6 +215,9 @@ export default function InboxPage({
                       <span className={styles.fileName}>{file.filename}</span>
                       <span className={styles.fileMeta}>
                         {formatFileSize(file.file_size)} • {file.content_type || 'Unknown type'}
+                      </span>
+                      <span role={file.processing_status === 'failed' ? 'alert' : undefined} className={styles.fileMeta}>
+                        Evidence processing: {file.processing_status || 'pending'}{file.processing_error ? ' — ' + file.processing_error : ''}
                       </span>
                     </div>
                   </div>

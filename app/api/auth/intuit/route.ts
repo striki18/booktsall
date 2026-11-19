@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { randomBytes, createHash } from 'crypto';
+import { requireUser } from '@/lib/auth';
 
 /**
  * Generate a random string for PKCE code verifier and OAuth state.
@@ -13,6 +14,11 @@ function generateCodeChallenge(verifier: string): string {
 }
 
 export async function GET() {
+  try {
+    await requireUser();
+  } catch {
+    return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+  }
   // Environment variables (server side only)
   const clientId = process.env.INTUIT_CLIENT_ID!;
   const redirectUri = process.env.INTUIT_REDIRECT_URI!;
@@ -47,14 +53,14 @@ export async function GET() {
   // from Intuit back to our localhost callback. Secure is false for local http.
   response.cookies.set('intuit_oauth_state', state, {
     httpOnly: true,
-    secure: false,
+    secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     maxAge,
     path: '/',
   });
   response.cookies.set('intuit_code_verifier', codeVerifier, {
     httpOnly: true,
-    secure: false,
+    secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     maxAge,
     path: '/',

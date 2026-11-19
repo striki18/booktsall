@@ -36,6 +36,8 @@ vi.mock('../lib/quickbooks', () => ({
 }));
 
 vi.mock('../lib/qbo-evidence-register', () => ({
+  buildQboEvidenceRegister: vi.fn(),
+  applyStoredEvidenceReviewDecisions: vi.fn(),
   populateQboEvidenceRegister: vi.fn(),
   getRegisterEntries: vi.fn(),
   updateRegisterForDocument: vi.fn(),
@@ -48,6 +50,7 @@ vi.mock('../lib/output', () =>({
 
 vi.mock('../lib/zip', () => ({
   generateZip: vi.fn(),
+  verifyZip: vi.fn(),
 }));
 
 vi.mock('../lib/document-extraction', () => ({
@@ -86,9 +89,9 @@ vi.mock('fs', () => mockFs);
 
 // Import mocked modules and the module under test
 import { getTransactions, getAttachables, normalizeTransactionList, normalizeAttachables, downloadFile } from '../lib/quickbooks';
-import { populateQboEvidenceRegister, getRegisterEntries, updateRegisterForDocument } from '../lib/qbo-evidence-register';
+import { applyStoredEvidenceReviewDecisions, buildQboEvidenceRegister, populateQboEvidenceRegister, getRegisterEntries, updateRegisterForDocument } from '../lib/qbo-evidence-register';
 import { generateAndSaveCsvs, splitEvidenceRegister } from '../lib/output';
-import { generateZip } from '../lib/zip';
+import { generateZip, verifyZip } from '../lib/zip';
 import { processCollectionRequestDocuments, downloadDocument } from '../lib/document-extraction';
 import { supabaseAdmin } from '../lib/supabase-admin';
 import { generatePackage, PipelineResult } from '../lib/pipeline';
@@ -110,7 +113,7 @@ describe('pipeline.ts - generatePackage', () => {
     const { inboxDocuments = { data: [], error: null }, collectionRequest = { data: null, error: null } } = options;
     evidenceDocuments = options.evidenceDocuments || new Map();
     
-    let inboxDocCallCount = 0;
+    let inboxDocCallCount = 1;
     
     (supabaseAdmin.from as any).mockImplementation((table: string) => {
       if (table === 'inbox_documents') {
@@ -156,6 +159,8 @@ describe('pipeline.ts - generatePackage', () => {
     (normalizeAttachables as any).mockReturnValue([]);
     (populateQboEvidenceRegister as any).mockResolvedValue(undefined);
     (getRegisterEntries as any).mockResolvedValue([]);
+    (buildQboEvidenceRegister as any).mockImplementation(async () => getRegisterEntries(companyId, undefined, startDate, endDate));
+    (applyStoredEvidenceReviewDecisions as any).mockImplementation(async (entries: any[]) => entries);
     (updateRegisterForDocument as any).mockResolvedValue(undefined);
     (splitEvidenceRegister as any).mockReturnValue({ missingEntries: [], matchedEntries: [] });
     (generateAndSaveCsvs as any).mockResolvedValue({
@@ -165,6 +170,7 @@ describe('pipeline.ts - generatePackage', () => {
       missingCount: 0,
     });
     (generateZip as any).mockResolvedValue('/tmp/audit_package.zip');
+    (verifyZip as any).mockResolvedValue({ zipCreated: true, filenameValid: true, validArchive: true, attachmentsPresent: true, evidenceRegisterPresent: true, missingDocumentsPresent: true, packageManifestPresent: true, manifestReadable: true, manifestFilesPresent: true, manifestHashesValid: true, attachmentsNonEmpty: true, csvReadable: true, noExpectedFilesMissing: true, noUnexpectedFiles: true, contentsMatchSource: true, errors: [] });
     (processCollectionRequestDocuments as any).mockResolvedValue([]);
     (downloadDocument as any).mockResolvedValue(Buffer.from('test document'));
     (downloadFile as any).mockResolvedValue({ success: true, filePath: '/tmp/receipt.pdf' });
@@ -211,10 +217,12 @@ describe('pipeline.ts - generatePackage', () => {
       expect(result.stats.elapsedTimeMs).toBeGreaterThanOrEqual(0);
 
       // Verify all stages were called in order
-      expect(getTransactions).toHaveBeenCalledWith(startDate, endDate);
-      expect(getAttachables).toHaveBeenCalled();
-      expect(populateQboEvidenceRegister).toHaveBeenCalledWith(companyId, startDate, endDate);
-      expect(getRegisterEntries).toHaveBeenCalledWith(companyId, undefined, startDate, endDate);
+      expect(getTransactions).toHaveBeenCalledWith(startDate, endDate, companyId);
+      expect(getAttachables).toHaveBeenCalledWith(companyId);
+      expect(buildQboEvidenceRegister).toHaveBeenCalledWith({ realmId: companyId, startDate, endDate, transactions: [], attachables: [] });
+      expect(applyStoredEvidenceReviewDecisions).toHaveBeenCalledWith([], companyId);
+      expect(populateQboEvidenceRegister).not.toHaveBeenCalled();
+      expect(updateRegisterForDocument).not.toHaveBeenCalled();
       expect(generateAndSaveCsvs).toHaveBeenCalled();
       expect(generateZip).toHaveBeenCalled();
     });
@@ -270,28 +278,64 @@ describe('pipeline.ts - generatePackage', () => {
       expect(result.stats.missingCount).toBe(0);
     });
 
+    it('packages matched and approved secondary documents, omitting pending and rejected decisions', async () => {
+      const registerRows = [
+        { qboTxnId: 'txn-1', qboTxnType: 'Bill', qboTxnDate: '2023-06-15', qboTxnVendor: 'Vendor A', qboTxnAmount: 100, qboTxnDocNumber: 'INV-001', attachableId: null, attachmentFilename: 'primary.pdf', registerState: 'MATCHED', matchedDocumentId: 'doc-primary', reviewCandidateTxnIds: [] },
+        { qboTxnId: 'txn-1', qboTxnType: 'Bill', qboTxnDate: '2023-06-15', qboTxnVendor: 'Vendor A', qboTxnAmount: 100, qboTxnDocNumber: 'INV-001', attachableId: null, attachmentFilename: 'approved-extra.pdf', registerState: 'REVIEW_REQUIRED', matchedDocumentId: 'doc-approved', reviewCandidateTxnIds: ['txn-1'], humanApproved: true, reviewDecision: { action: 'assign_transaction', selected_qbo_txn_id: 'txn-1', reviewer_user_id: 'reviewer-1', created_at: '2026-11-01T00:00:00Z', rationale: 'Approved second receipt' }, reviewHistory: [{ id: 'decision-1', action: 'assign_transaction' }] },
+        { qboTxnId: null, qboTxnType: null, qboTxnDate: null, qboTxnVendor: null, qboTxnAmount: null, qboTxnDocNumber: null, attachableId: null, attachmentFilename: 'pending.pdf', registerState: 'REVIEW_REQUIRED', matchedDocumentId: 'doc-pending', reviewCandidateTxnIds: ['txn-1'] },
+        { qboTxnId: 'txn-1', qboTxnType: 'Bill', qboTxnDate: '2023-06-15', qboTxnVendor: 'Vendor A', qboTxnAmount: 100, qboTxnDocNumber: 'INV-001', attachableId: null, attachmentFilename: 'rejected.pdf', registerState: 'REVIEW_REQUIRED', matchedDocumentId: 'doc-rejected', reviewCandidateTxnIds: ['txn-1'], humanApproved: false, reviewDecision: { action: 'reject_match', selected_qbo_txn_id: null, reviewer_user_id: 'reviewer-1', created_at: '2026-11-01T00:00:00Z', rationale: 'Not this transaction' } },
+      ];
+      (buildQboEvidenceRegister as any).mockResolvedValue(registerRows);
+      (applyStoredEvidenceReviewDecisions as any).mockResolvedValue(registerRows);
+      const docs = new Map<string, any>([
+        ['doc-primary', { data: { storage_path: 'inbox/realm/doc-primary/primary.pdf', filename: 'primary.pdf' }, error: null }],
+        ['doc-approved', { data: { storage_path: 'inbox/realm/doc-approved/approved-extra.pdf', filename: 'approved-extra.pdf' }, error: null }],
+        ['doc-pending', { data: { storage_path: 'inbox/realm/doc-pending/pending.pdf', filename: 'pending.pdf' }, error: null }],
+        ['doc-rejected', { data: { storage_path: 'inbox/realm/doc-rejected/rejected.pdf', filename: 'rejected.pdf' }, error: null }],
+      ]);
+      setupSupabaseMock({ inboxDocuments: { data: [], error: null }, collectionRequest: { data: null, error: null }, evidenceDocuments: docs });
+
+      const result = await generatePackage(companyId, startDate, endDate);
+
+      expect(result.success).toBe(true);
+      expect(downloadDocument).toHaveBeenCalledTimes(2);
+      expect(downloadDocument).toHaveBeenCalledWith('inbox/realm/doc-primary/primary.pdf');
+      expect(downloadDocument).toHaveBeenCalledWith('inbox/realm/doc-approved/approved-extra.pdf');
+      expect(downloadDocument).not.toHaveBeenCalledWith('inbox/realm/doc-pending/pending.pdf');
+      expect(downloadDocument).not.toHaveBeenCalledWith('inbox/realm/doc-rejected/rejected.pdf');
+      expect(generateZip).toHaveBeenCalledWith(companyId, startDate, endDate, expect.arrayContaining([
+        expect.objectContaining({ matchedDocumentId: 'doc-primary' }),
+        expect.objectContaining({ matchedDocumentId: 'doc-approved' }),
+      ]), expect.any(Array));
+      const csvRows = (generateAndSaveCsvs as any).mock.calls[0][0];
+      expect(csvRows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ matchedDocumentId: 'doc-approved', humanApproved: true, reviewDecision: expect.objectContaining({ action: 'assign_transaction' }) }),
+        expect.objectContaining({ matchedDocumentId: 'doc-rejected', humanApproved: false, reviewDecision: expect.objectContaining({ action: 'reject_match' }) }),
+      ]));
+    });
+
     it('should correctly sequence all stages (getRegisterEntries called twice)', async () => {
       const callOrder: string[] = [];
       
       (getTransactions as any).mockImplementation(async () => { callOrder.push('getTransactions'); return { QueryResponse: { Transaction: [] } }; });
       (getAttachables as any).mockImplementation(async () => { callOrder.push('getAttachables'); return { QueryResponse: { Attachable: [] } }; });
-      (populateQboEvidenceRegister as any).mockImplementation(async () => { callOrder.push('populateQboEvidenceRegister'); });
-      (getRegisterEntries as any).mockImplementation(async () => { callOrder.push('getRegisterEntries'); return []; });
+      (buildQboEvidenceRegister as any).mockImplementation(async () => { callOrder.push('buildQboEvidenceRegister'); return []; });
+      (applyStoredEvidenceReviewDecisions as any).mockImplementation(async (entries: any[]) => { callOrder.push('applyStoredEvidenceReviewDecisions'); return entries; });
       (generateAndSaveCsvs as any).mockImplementation(async () => { callOrder.push('generateAndSaveCsvs'); return { evidenceRegisterPath: '', missingDocumentsPath: '', matchedCount: 0, missingCount: 0 }; });
       (generateZip as any).mockImplementation(async () => { callOrder.push('generateZip'); return '/tmp/test.zip'; });
 
       await generatePackage(companyId, startDate, endDate);
 
-      // getRegisterEntries is called twice: once after populateQboEvidenceRegister, once after inbox processing
       expect(callOrder).toEqual([
         'getTransactions',
         'getAttachables',
-        'populateQboEvidenceRegister',
-        'getRegisterEntries',
-        'getRegisterEntries',
+        'buildQboEvidenceRegister',
+        'applyStoredEvidenceReviewDecisions',
         'generateAndSaveCsvs',
         'generateZip',
       ]);
+      expect(populateQboEvidenceRegister).not.toHaveBeenCalled();
+      expect(updateRegisterForDocument).not.toHaveBeenCalled();
     });
   });
 
@@ -483,8 +527,10 @@ describe('pipeline.ts - generatePackage', () => {
 
       const result = await generatePackage(companyId, startDate, endDate);
 
-      expect(result.success).toBe(true); // Should not fail the entire pipeline
+      expect(result.success).toBe(true); // ZIP is available, but explicitly partial.
+      expect(result.completionStatus).toBe('partial');
       expect(result.stats.failedDownloadCount).toBeGreaterThanOrEqual(1);
+      expect(generateZip).toHaveBeenCalledWith(companyId, startDate, endDate, expect.any(Array), expect.arrayContaining([expect.objectContaining({ source: 'quickbooks', referenceId: 'att_1', fileName: 'receipt.pdf', reason: 'download_failed' })]));
     });
 
     it('should handle empty file downloads from QuickBooks', async () => {
@@ -516,7 +562,9 @@ describe('pipeline.ts - generatePackage', () => {
       const result = await generatePackage(companyId, startDate, endDate);
 
       expect(result.success).toBe(true);
+      expect(result.completionStatus).toBe('partial');
       expect(result.stats.failedDownloadCount).toBeGreaterThanOrEqual(1);
+      expect(generateZip).toHaveBeenCalledWith(companyId, startDate, endDate, expect.any(Array), expect.arrayContaining([expect.objectContaining({ source: 'quickbooks', referenceId: 'att_1', fileName: 'receipt.pdf', reason: 'empty_file' })]));
     });
   });
 
@@ -531,6 +579,22 @@ describe('pipeline.ts - generatePackage', () => {
       expect(result.error?.reason).toContain('Failed to generate ZIP');
     });
 
+    it('should fail pipeline verification when an evidence hash is invalid', async () => {
+      (verifyZip as any).mockResolvedValue({
+        zipCreated: true, filenameValid: true, validArchive: true, attachmentsPresent: true,
+        evidenceRegisterPresent: true, missingDocumentsPresent: true, packageManifestPresent: true,
+        manifestReadable: true, manifestFilesPresent: true, manifestHashesValid: false,
+        attachmentsNonEmpty: true, csvReadable: true, noExpectedFilesMissing: true,
+        noUnexpectedFiles: true, contentsMatchSource: true, errors: ['Evidence file hash mismatch'],
+      });
+
+      const result = await generatePackage(companyId, startDate, endDate);
+
+      expect(verifyZip).toHaveBeenCalledWith('/tmp/audit_package.zip', companyId, startDate, endDate);
+      expect(result.success).toBe(false);
+      expect(result.error?.stage).toBe('ZIP Verification');
+      expect(result.error?.details.errors).toContain('Evidence file hash mismatch');
+    });
     it('should verify ZIP file size after generation', async () => {
       mockFs.statSync.mockReturnValue({ size: 2048576 }); // 2MB
 
@@ -555,7 +619,7 @@ describe('pipeline.ts - generatePackage', () => {
 
   describe('Structured error handling and cleanup', () => {
     it('should handle Evidence Register Matching failure', async () => {
-      (populateQboEvidenceRegister as any).mockRejectedValue(new Error('Database connection failed'));
+      (buildQboEvidenceRegister as any).mockRejectedValue(new Error('QBO data retrieval failed'));
 
       const result = await generatePackage(companyId, startDate, endDate);
 
@@ -574,24 +638,12 @@ describe('pipeline.ts - generatePackage', () => {
       expect(result.error?.reason).toContain('Failed to generate CSVs');
     });
 
-    it('should handle Inbox Document Processing failure', async () => {
-      (supabaseAdmin.from as any).mockReturnValue({
-        select: vi.fn(() => ({
-          eq: vi.fn(() => ({
-            is: vi.fn(() => ({
-              single: vi.fn().mockResolvedValue({ data: null, error: new Error('DB error') }),
-            })),
-          })),
-        })),
-        update: vi.fn(() => ({
-          eq: vi.fn().mockResolvedValue({ error: null }),
-        })),
-      });
-
+    it('does not write register or document-processing state during package generation', async () => {
       const result = await generatePackage(companyId, startDate, endDate);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.stage).toBe('Inbox Document Processing');
+      expect(result.success).toBe(true);
+      expect(populateQboEvidenceRegister).not.toHaveBeenCalled();
+      expect(updateRegisterForDocument).not.toHaveBeenCalled();
+      expect(processCollectionRequestDocuments).not.toHaveBeenCalled();
     });
 
     it('should handle Evidence Document Download failure', async () => {
@@ -630,7 +682,9 @@ describe('pipeline.ts - generatePackage', () => {
 
       // Pipeline catches per-document download errors and continues
       expect(result.success).toBe(true);
+      expect(result.completionStatus).toBe('partial');
       expect(result.stats.failedDownloadCount).toBeGreaterThanOrEqual(1);
+      expect(generateZip).toHaveBeenCalledWith(companyId, startDate, endDate, expect.any(Array), expect.arrayContaining([expect.objectContaining({ source: 'client_upload', referenceId: 'doc_1', reason: 'source_not_found' })]));
     });
 
     it('should clean up temporary directory after QBO attachment downloads', async () => {
@@ -968,6 +1022,7 @@ describe('pipeline.ts - generatePackage', () => {
       const result = await generatePackage(companyId, startDate, endDate);
 
       expect(result.success).toBe(true);
+      expect(result.completionStatus).toBe('partial');
       expect(result.stats.successfulDownloadCount).toBe(1);
       expect(result.stats.failedDownloadCount).toBe(1);
     });

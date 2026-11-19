@@ -29,6 +29,14 @@ vi.mock('@/lib/quickbooks', () => ({
   getStoredToken: vi.fn(),
 }));
 
+vi.mock('@/lib/package-persistence', () => ({
+  persistPipelinePackage: vi.fn(),
+}));
+
+vi.mock('node:fs/promises', () => ({
+  readFile: vi.fn().mockResolvedValue(Buffer.from('mock-zip-bytes')) ,
+}));
+
 vi.mock('next/server', () => ({
   NextRequest: vi.fn(),
   NextResponse: {
@@ -39,6 +47,7 @@ vi.mock('next/server', () => ({
 import { requireAuth } from '@/lib/auth';
 import { generatePackage } from '@/lib/pipeline';
 import { getStoredToken } from '@/lib/quickbooks';
+import { persistPipelinePackage } from '@/lib/package-persistence';
 import { NextResponse as MockNextResponse } from 'next/server';
 
 // Import the route handler dynamically
@@ -46,9 +55,10 @@ let routeModule: any;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  (persistPipelinePackage as any).mockResolvedValue({ id: 'package-1', realm_id: 'test_realm_123', status: 'complete', zip_path: 'packages/test_realm_123/package-1/AuditPackage.zip', filename: 'AuditPackage.zip', created_at: '2026-11-13T00:00:00Z' });
   
   // Reset NextResponse.json mock
-  (MockNextResponse.json as any).mockImplementation((body, init) => ({
+  (MockNextResponse.json as any).mockImplementation((body: any, init?: any) => ({
     body,
     init: init || {},
     status: init?.status || 200,
@@ -84,7 +94,7 @@ describe('app/api/generate/route.ts - POST', () => {
 
   describe('Invalid and Missing Inputs', () => {
     beforeEach(() => {
-      (requireAuth as any).mockResolvedValue({ user: {}, realmId: 'test_realm_123' });
+      (requireAuth as any).mockResolvedValue({ user: { id: 'user-1' }, realmId: 'test_realm_123' });
       // Mock getStoredToken to return matching realm for these tests
       (getStoredToken as any).mockResolvedValue({ realm_id: 'test_realm_123', access_token: 'token' });
     });
@@ -159,7 +169,7 @@ describe('app/api/generate/route.ts - POST', () => {
 
   describe('Date Validation', () => {
     beforeEach(() => {
-      (requireAuth as any).mockResolvedValue({ user: {}, realmId: 'test_realm_123' });
+      (requireAuth as any).mockResolvedValue({ user: { id: 'user-1' }, realmId: 'test_realm_123' });
       // Mock getStoredToken to return matching realm for these tests
       (getStoredToken as any).mockResolvedValue({ realm_id: 'test_realm_123', access_token: 'token' });
     });
@@ -260,7 +270,7 @@ describe('app/api/generate/route.ts - POST', () => {
 
   describe('Successful Pipeline Response', () => {
     beforeEach(() => {
-      (requireAuth as any).mockResolvedValue({ user: {}, realmId: 'test_realm_123' });
+      (requireAuth as any).mockResolvedValue({ user: { id: 'user-1' }, realmId: 'test_realm_123' });
       // Mock getStoredToken to return matching realm for these tests
       (getStoredToken as any).mockResolvedValue({ realm_id: 'test_realm_123', access_token: 'token' });
     });
@@ -287,14 +297,29 @@ describe('app/api/generate/route.ts - POST', () => {
 
       expect(response.status).toBe(200);
       expect(json.success).toBe(true);
-      expect(json.packagePath).toBe('/tmp/audit_package_20230101_20231231.zip');
-      expect(json.packageName).toBe('audit_package_20230101_20231231.zip');
+      expect(json.completionStatus).toBe('complete');
+      expect(json.packagePath).toBe('packages/test_realm_123/package-1/AuditPackage.zip');
+      expect(json.packageId).toBe('package-1');
+      expect(json.packageName).toBe('AuditPackage.zip');
       expect(json.stats.transactionCount).toBe(10);
       expect(json.stats.matchedCount).toBe(4);
       expect(json.stats.missingCount).toBe(6);
       expect(generatePackage).toHaveBeenCalledWith('test_realm_123', '2023-01-01', '2023-12-31');
     });
 
+    it('reports partial completion when downloads failed but a ZIP was generated', async () => {
+      (generatePackage as any).mockResolvedValue({
+        success: true,
+        zipPath: '/tmp/partial.zip',
+        stats: { transactionCount: 1, attachableCount: 1, matchedCount: 1, missingCount: 0, successfulDownloadCount: 0, failedDownloadCount: 1, zipSizeBytes: 120, elapsedTimeMs: 20 },
+      });
+      const response = await routeModule.POST(createMockRequest(validBody));
+      const json = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(json.success).toBe(true);
+      expect(json.completionStatus).toBe('partial');
+    });
     it('should trim companyId before passing to pipeline', async () => {
       (generatePackage as any).mockResolvedValue({
         success: true,
@@ -326,7 +351,7 @@ describe('app/api/generate/route.ts - POST', () => {
 
   describe('Pipeline Failure and Structured Error Response', () => {
     beforeEach(() => {
-      (requireAuth as any).mockResolvedValue({ user: {}, realmId: 'test_realm_123' });
+      (requireAuth as any).mockResolvedValue({ user: { id: 'user-1' }, realmId: 'test_realm_123' });
       // Mock getStoredToken to return matching realm for these tests
       (getStoredToken as any).mockResolvedValue({ realm_id: 'test_realm_123', access_token: 'token' });
     });
@@ -439,10 +464,10 @@ describe('app/api/generate/route.ts - POST', () => {
     });
   });
 
-  describe('Company ID Validation Against Backend QuickBooks Realm', () => {
+  describe('Authenticated Company ID Validation Against QuickBooks Realm', () => {
     beforeEach(() => {
       // Mock requireAuth to pass auth (not testing auth here)
-      (requireAuth as any).mockResolvedValue({ user: {}, realmId: 'test_realm_123' });
+      (requireAuth as any).mockResolvedValue({ user: { id: 'user-1' }, realmId: 'test_realm_123' });
       // Mock successful pipeline to isolate companyId validation
       (generatePackage as any).mockResolvedValue({
         success: true,
@@ -470,21 +495,34 @@ describe('app/api/generate/route.ts - POST', () => {
 
       expect(response.status).toBe(200);
       expect(json.success).toBe(true);
-      expect(getStoredToken).toHaveBeenCalled();
+      expect(getStoredToken).toHaveBeenCalledWith('test_realm_123');
     });
 
-    it('should return 403 when companyId does not match backend realmId', async () => {
-      // Backend has realm 'backend_realm_456' stored, frontend sends 'test_realm_123'
-      (getStoredToken as any).mockResolvedValue({ realm_id: 'backend_realm_456', access_token: 'token' });
+    it('should return 403 when companyId does not match the authenticated realm', async () => {
+      (requireAuth as any).mockResolvedValue({ user: {}, realmId: 'backend_realm_456' });
 
-      const request = createMockRequest(validBody); // companyId: 'test_realm_123'
+      const request = createMockRequest(validBody);
       const response = await routeModule.POST(request);
       const json = await response.json();
 
       expect(response.status).toBe(403);
       expect(json.error).toBe('companyId does not match connected QuickBooks realm');
+      expect(getStoredToken).not.toHaveBeenCalled();
+      expect(generatePackage).not.toHaveBeenCalled();
     });
 
+    it('should reject anonymous requests before looking up tokens or generating packages', async () => {
+      (requireAuth as any).mockRejectedValue(new Error('UNAUTHORIZED'));
+
+      const request = createMockRequest(validBody);
+      const response = await routeModule.POST(request);
+      const json = await response.json();
+
+      expect(response.status).toBe(401);
+      expect(json.error).toBe('Authentication required');
+      expect(getStoredToken).not.toHaveBeenCalled();
+      expect(generatePackage).not.toHaveBeenCalled();
+    });
     it('should return 403 when no QuickBooks connection is stored in backend', async () => {
       // No stored token (null = no QuickBooks connection)
       (getStoredToken as any).mockResolvedValue(null);
@@ -497,7 +535,7 @@ describe('app/api/generate/route.ts - POST', () => {
       expect(json.error).toBe('No QuickBooks connection found for this backend');
     });
 
-    it('should return 403 when stored token has no realm_id', async () => {
+    it('should return 403 when the realm-scoped token has no realm_id', async () => {
       // Token exists but realm_id is missing
       (getStoredToken as any).mockResolvedValue({ access_token: 'token' });
 

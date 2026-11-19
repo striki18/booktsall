@@ -1,6 +1,7 @@
 import { NextResponse, NextRequest } from 'next/server';
-import { supabase } from '@/lib/supabase';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { requireAuthContext } from '@/lib/auth';
+import { requireOwnedEvidenceRequest, ownershipErrorStatus } from '@/lib/resource-access';
 
 /**
  * GET /api/evidence/document/[id]
@@ -16,6 +17,9 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
+  let authenticatedSupabase: any;
+  try { ({ supabase: authenticatedSupabase } = await requireAuthContext()); } catch (error) { const status = ownershipErrorStatus(error); return NextResponse.json({ error: status === 401 ? 'Authentication required' : 'Forbidden' }, { status: status ?? 500 }); }
+
   // Validate UUID format
   const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
   if (!id || !uuidRegex.test(id)) {
@@ -23,9 +27,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
 
   // Fetch document metadata
-  const { data: doc, error: docError } = await supabase
+  const { data: doc, error: docError } = await authenticatedSupabase
     .from('evidence_documents')
-    .select('id, filename, content_type, file_size, storage_path')
+    .select('id, evidence_request_id, filename, content_type, file_size, storage_path')
     .eq('id', id)
     .single();
 
@@ -33,6 +37,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ error: 'Document not found' }, { status: 404 });
   }
 
+  try {
+    await requireOwnedEvidenceRequest(doc.evidence_request_id);
+  } catch (error) {
+    const status = ownershipErrorStatus(error);
+    return NextResponse.json({ error: status === 401 ? 'Authentication required' : status === 403 ? 'Forbidden' : 'Ownership check failed' }, { status: status ?? 500 });
+  }
   // Generate signed URL (10 minutes = 600 seconds)
   const { data: signedData, error: signedError } = await supabaseAdmin
     .storage
@@ -68,6 +78,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
+  let authenticatedSupabase: any;
+  try { ({ supabase: authenticatedSupabase } = await requireAuthContext()); } catch (error) { const status = ownershipErrorStatus(error); return NextResponse.json({ error: status === 401 ? 'Authentication required' : 'Forbidden' }, { status: status ?? 500 }); }
+
   // Validate UUID format
   const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
   if (!id || !uuidRegex.test(id)) {
@@ -75,9 +88,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   }
 
   // Fetch document metadata to obtain storage_path
-  const { data: doc, error: docError } = await supabase
+  const { data: doc, error: docError } = await authenticatedSupabase
     .from('evidence_documents')
-    .select('id, storage_path')
+    .select('id, evidence_request_id, storage_path')
     .eq('id', id)
     .single();
 
@@ -85,6 +98,12 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     return NextResponse.json({ error: 'Document not found' }, { status: 404 });
   }
 
+  try {
+    await requireOwnedEvidenceRequest(doc.evidence_request_id);
+  } catch (error) {
+    const status = ownershipErrorStatus(error);
+    return NextResponse.json({ error: status === 401 ? 'Authentication required' : status === 403 ? 'Forbidden' : 'Ownership check failed' }, { status: status ?? 500 });
+  }
   // Delete the file from Supabase Storage
   const { error: storageError } = await supabaseAdmin
     .storage
@@ -97,7 +116,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   }
 
   // Delete the row from the database
-  const { error: dbError } = await supabase
+  const { error: dbError } = await authenticatedSupabase
     .from('evidence_documents')
     .delete()
     .eq('id', id);

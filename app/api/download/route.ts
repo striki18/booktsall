@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getCompanyOutputDir } from '@/lib/output';
 import { sanitizeForFilename } from '@/lib/zip';
+import { requireAuth, requireAuthContext } from '@/lib/auth';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 /**
  * GET /api/download
@@ -21,6 +23,38 @@ export async function GET(request: NextRequest) {
   const companyId = searchParams.get('companyId');
   const startDate = searchParams.get('startDate');
   const endDate = searchParams.get('endDate');
+  const packageId = searchParams.get('packageId');
+  if (packageId) {
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!uuidRegex.test(packageId)) return NextResponse.json({ error: 'Invalid packageId' }, { status: 400 });
+    try {
+      const { realmId, supabase } = await requireAuthContext();
+      const { data: pkg, error } = await supabase
+        .from('generated_evidence_packages')
+        .select('id, realm_id, status, zip_path, filename')
+        .eq('id', packageId)
+        .eq('realm_id', realmId)
+        .single();
+      if (error || !pkg) return NextResponse.json({ error: 'Package not found' }, { status: 404 });
+      if (pkg.status !== 'complete' && pkg.status !== 'partial') return NextResponse.json({ error: 'Package is not ready for download' }, { status: 409 });
+      if (!pkg.zip_path) return NextResponse.json({ error: 'Package file is not available' }, { status: 409 });
+
+      const { data: file, error: downloadError } = await supabaseAdmin.storage.from('evidence').download(pkg.zip_path);
+      if (downloadError || !file) return NextResponse.json({ error: 'Package file not found in storage' }, { status: 404 });
+      const buffer = Buffer.from(await file.arrayBuffer());
+      return new NextResponse(buffer, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="${pkg.filename}"`,
+          'Content-Length': buffer.length.toString(),
+        },
+      });
+    } catch (error) {
+      const status = error instanceof Error && error.message === 'UNAUTHORIZED' ? 401 : 403;
+      return NextResponse.json({ error: status === 401 ? 'Authentication required' : 'Forbidden' }, { status });
+    }
+  }
 
   // Validate required parameters
   if (!companyId || typeof companyId !== 'string' || companyId.trim() === '') {
@@ -54,6 +88,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const { realmId } = await requireAuth();
+    if (companyId !== realmId) return NextResponse.json({ error: 'companyId is not authorized for this account' }, { status: 403 });
     // Generate the expected ZIP filename using the same logic as Phase 7/9B
     const safeCompanyId = sanitizeForFilename(companyId.trim());
     const safeStartDate = sanitizeForFilename(startDate);
@@ -98,7 +134,9 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (e: any) {
-    console.error('Download error:', e);
+    const status = e instanceof Error && e.message === 'UNAUTHORIZED' ? 401 : e instanceof Error && (e.message === 'NO_REALM_ID' || e.message === 'FORBIDDEN') ? 403 : 500;
+    if (status !== 500) return NextResponse.json({ error: status === 401 ? 'Authentication required' : 'Forbidden' }, { status });
+    console.error('Download error');
     return NextResponse.json(
       { error: 'Internal server error during download' },
       { status: 500 }

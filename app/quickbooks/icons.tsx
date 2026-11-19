@@ -2,6 +2,190 @@
 "use client";
 
 import React from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
+
+type WorkspaceSection = 'overview' | 'generate' | 'evidence' | 'missing' | 'attachments';
+type WorkspacePanel = 'work' | 'packages' | null;
+type QboConnectionState = 'checking' | 'connected' | 'needs_connection' | 'signed_out' | 'unavailable';
+export type WordingMode = 'general' | 'finance';
+
+export function useWordingMode() {
+  const [wording, setWording] = useState<WordingMode>('general');
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem('zevidt:wording');
+    if (saved === 'finance' || saved === 'general') setWording(saved);
+    const syncWording = (event: Event) => {
+      const value = (event as CustomEvent<WordingMode>).detail;
+      if (value === 'finance' || value === 'general') setWording(value);
+    };
+    const syncStorage = (event: StorageEvent) => {
+      if (event.key === 'zevidt:wording' && (event.newValue === 'finance' || event.newValue === 'general')) {
+        setWording(event.newValue);
+      }
+    };
+    window.addEventListener('zevidt:wording-change', syncWording);
+    window.addEventListener('storage', syncStorage);
+    return () => {
+      window.removeEventListener('zevidt:wording-change', syncWording);
+      window.removeEventListener('storage', syncStorage);
+    };
+  }, []);
+
+  function chooseWording(value: WordingMode) {
+    setWording(value);
+    window.localStorage.setItem('zevidt:wording', value);
+    window.dispatchEvent(new CustomEvent('zevidt:wording-change', { detail: value }));
+  }
+
+  return { wording, setWording: chooseWording };
+}
+
+const workspaceSections: { id: WorkspaceSection; general: string; finance: string }[] = [
+  { id: 'overview', general: 'Activity', finance: 'Overview' },
+  { id: 'generate', general: 'Create a report', finance: 'Generate package' },
+  { id: 'evidence', general: 'Documents and transactions', finance: 'Evidence register' },
+  { id: 'missing', general: 'Needs documents', finance: 'Missing documents' },
+  { id: 'attachments', general: 'Files', finance: 'Attachments' },
+];
+
+export function WorkspaceHeader({
+  activeSection,
+  onSelectSection,
+}: {
+  activeSection?: WorkspaceSection;
+  onSelectSection?: (section: WorkspaceSection) => void;
+}) {
+  const pathname = usePathname();
+  const [panel, setPanel] = useState<WorkspacePanel>(null);
+  const [qboConnectionState, setQboConnectionState] = useState<QboConnectionState>('checking');
+  const { wording, setWording } = useWordingMode();
+  const financeMode = wording === 'finance';
+  const isHomeOverview = pathname === '/quickbooks' && (!activeSection || activeSection === 'overview');
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth/intuit/token')
+      .then((response) => {
+        if (!active) return;
+        if (response.ok) setQboConnectionState('connected');
+        else if (response.status === 401) setQboConnectionState('signed_out');
+        else if (response.status === 403 || response.status === 404) setQboConnectionState('needs_connection');
+        else setQboConnectionState('unavailable');
+      })
+      .catch(() => {
+        if (active) setQboConnectionState('unavailable');
+      });
+    return () => { active = false; };
+  }, [pathname]);
+
+  function connectQuickBooks() {
+    if (qboConnectionState === 'signed_out') {
+      window.location.assign('/login');
+    } else if (qboConnectionState === 'needs_connection') {
+      window.location.assign('/api/auth/intuit');
+    }
+  }
+
+  function openSection(section: WorkspaceSection) {
+    if (pathname === '/quickbooks' && onSelectSection) {
+      onSelectSection(section);
+      setPanel(null);
+      return;
+    }
+    window.location.assign(`/quickbooks?section=${section}`);
+  }
+
+  return (
+    <>
+      <header className="workspaceTopbar">
+        <Link href="/quickbooks" className="workspaceBrand" aria-label="Zevidt home">
+          <span className="workspaceBrandMark" aria-hidden="true">z</span>
+          <span>zevidt</span>
+        </Link>
+
+        <nav className="workspacePrimaryNav" aria-label="Primary navigation">
+          <Link href="/quickbooks" className={pathname === '/quickbooks' ? 'isCurrent' : ''} onClick={(event) => {
+            if (pathname === '/quickbooks' && onSelectSection) {
+              event.preventDefault();
+              onSelectSection('overview');
+              setPanel(null);
+            }
+          }}>Home</Link>
+          <Link href="/documents" className={pathname === '/documents' ? 'isCurrent' : ''}>{financeMode ? 'Documents' : 'Inbox'}</Link>
+          <button type="button" aria-expanded={panel === 'work'} onClick={() => setPanel(panel === 'work' ? null : 'work')}>
+            {financeMode ? 'Transactions' : 'Work'} <span aria-hidden="true">⌄</span>
+          </button>
+          <Link href="/review" className={pathname === '/review' ? 'isCurrent' : ''}>{financeMode ? 'Evidence review' : 'Needs a look'}</Link>
+          <button type="button" aria-expanded={panel === 'packages'} onClick={() => setPanel(panel === 'packages' ? null : 'packages')}>
+            Packages <span aria-hidden="true">⌄</span>
+          </button>
+        </nav>
+
+        <div className="workspaceTopbarActions">
+          {isHomeOverview && qboConnectionState !== 'connected' ? (
+            <button
+              type="button"
+              className="workspaceConnectButton"
+              onClick={connectQuickBooks}
+              disabled={qboConnectionState === 'checking' || qboConnectionState === 'unavailable'}
+            >
+              {qboConnectionState === 'checking' ? 'Checking connection…' : qboConnectionState === 'signed_out' ? 'Sign in to connect' : qboConnectionState === 'unavailable' ? 'Connection unavailable' : 'Connect QuickBooks'}
+            </button>
+          ) : null}
+          <div className="wordingToggle" role="group" aria-label="Language">
+            <button type="button" aria-pressed={!financeMode} onClick={() => setWording('general')}>General</button>
+            <button type="button" aria-pressed={financeMode} onClick={() => setWording('finance')}>Finance</button>
+          </div>
+        </div>
+      </header>
+
+      {!isHomeOverview && qboConnectionState !== 'connected' && qboConnectionState !== 'checking' && qboConnectionState !== 'unavailable' ? (
+        <div className="workspaceConnectPrompt" role="status">
+          <div>
+            <strong>Connect QuickBooks to see more here</strong>
+            <span>Load this company’s transactions and related details into Zevidt.</span>
+          </div>
+          <button type="button" className="workspaceConnectButton" onClick={connectQuickBooks}>
+            {qboConnectionState === 'signed_out' ? 'Sign in to connect' : 'Connect QuickBooks'}
+          </button>
+        </div>
+      ) : null}
+
+      {panel ? (
+        <>
+          <button type="button" className="workspacePanelScrim" aria-label="Close menu" onClick={() => setPanel(null)} />
+          <aside className="workspaceSidePanel" aria-label={panel === 'work' ? 'Work menu' : 'Package menu'}>
+            <div className="workspacePanelHeading">
+              <div>
+                <p>{panel === 'work' ? 'YOUR WORKSPACE' : 'EXPORTS & AUDITS'}</p>
+                <h2>{panel === 'work' ? (financeMode ? 'Transactions' : 'Your work') : 'Packages'}</h2>
+              </div>
+              <button type="button" aria-label="Close menu" onClick={() => setPanel(null)}>×</button>
+            </div>
+            {panel === 'work' ? (
+              <div className="workspacePanelLinks">
+                {workspaceSections.map((section) => (
+                  <button key={section.id} type="button" className={activeSection === section.id ? 'isCurrent' : ''} onClick={() => openSection(section.id)}>
+                    <span>{financeMode ? section.finance : section.general}</span><span aria-hidden="true">→</span>
+                  </button>
+                ))}
+                <Link href="/firm/inbox" onClick={() => setPanel(null)}>{financeMode ? 'Collection requests' : 'Client requests'}<span aria-hidden="true">→</span></Link>
+              </div>
+            ) : (
+              <div className="workspacePanelLinks">
+                <Link href="/packages" onClick={() => setPanel(null)}>Package history<span aria-hidden="true">→</span></Link>
+                <Link href="/audit-packages" onClick={() => setPanel(null)}>Audit packages<span aria-hidden="true">→</span></Link>
+              </div>
+            )}
+          </aside>
+        </>
+      ) : null}
+    </>
+  );
+}
 
 // SVG Icons - accept and forward props for className, style, etc.
 interface IconProps {

@@ -1,5 +1,5 @@
 import { NextResponse, NextRequest } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { requireOwnedEvidenceRequest, ownershipErrorStatus } from '@/lib/resource-access';
 
 /**
  * GET /api/evidence/request/[id]
@@ -30,6 +30,8 @@ export async function GET(
       return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
     }
 
+    const { supabase } = await requireOwnedEvidenceRequest(id);
+
     const { data, error } = await supabase
       .from('evidence_requests')
       .select('*')
@@ -48,8 +50,10 @@ export async function GET(
     // Return the first (and only) row.
     return NextResponse.json(data[0]);
   } catch (e: any) {
-    console.error('Unexpected error in evidence request GET by id:', e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    const status = ownershipErrorStatus(e);
+    if (status) return NextResponse.json({ error: status === 401 ? 'Authentication required' : status === 403 ? 'Forbidden' : 'Ownership check failed' }, { status });
+    console.error('Unexpected error in evidence request GET by id');
+    return NextResponse.json({ error: 'Failed to load evidence request' }, { status: 500 });
   }
 }
 
@@ -103,8 +107,16 @@ export async function PATCH(
     return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
   }
 
+  let authenticatedSupabase: any;
+  try {
+    ({ supabase: authenticatedSupabase } = await requireOwnedEvidenceRequest(id));
+  } catch (error) {
+    const status = ownershipErrorStatus(error);
+    return NextResponse.json({ error: status === 401 ? 'Authentication required' : status === 403 ? 'Forbidden' : 'Ownership check failed' }, { status: status ?? 500 });
+  }
+
   // Fetch existing record
-  const { data: existing, error: fetchError } = await supabase
+  const { data: existing, error: fetchError } = await authenticatedSupabase
     .from('evidence_requests')
     .select('*')
     .eq('id', id)
@@ -125,7 +137,7 @@ export async function PATCH(
 
   // Perform update
   const now = new Date().toISOString();
-  const { data: updated, error: updateError } = await supabase
+  const { data: updated, error: updateError } = await authenticatedSupabase
     .from('evidence_requests')
     .update({
       status: 'received',

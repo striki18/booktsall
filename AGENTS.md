@@ -25,3 +25,14 @@
  - If asked for one command, output one command only.
  - If asked for a prompt, output only the prompt.
  - If you do not have enough evidence, say so instead of guessing.
+## Zevidt project safeguards
+
+- Work only in the current Zevidt repository. The original AuditReady project is protected: never access or modify it.
+- Never change the existing `.env.local` file or the Supabase CLI project link.
+- Never expose, print, commit, or otherwise disclose credentials, access tokens, or secrets.
+- Preserve all existing uncommitted work. Do not reset, revert, overwrite, or discard it.
+- Do not commit, push, or deploy without explicit authorization.
+- Before destructive database operations, migrations against a remote database, or changes to financial data, stop and obtain explicit approval. Do not change QuickBooks financial fields.
+- During a read-only investigation, do not modify files, databases, credentials, policies, or external services.
+- Report PASS only when runtime evidence supports it. Label code inspection, mocked tests, local tests, and live integration results separately.
+- For implementation, use Find → Fix → Verify and handle one bug at a time. If verification fails, continue on that issue only.

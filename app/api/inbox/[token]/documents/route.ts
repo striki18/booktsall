@@ -93,13 +93,20 @@ export async function POST(
         return NextResponse.json({ error: 'Failed to save document metadata' }, { status: 500 });
       }
 
-      // Trigger the document-processing pipeline for this upload.
-      // Extraction and matching results are persisted by processInboxDocument
-      // to the existing inbox_documents fields. Failures are non-fatal so the
-      // upload response and storage behavior are preserved.
+      // Keep upload success distinct from extraction and matching state. A failed
+      // processing attempt is persisted and returned so it can be retried visibly.
+      let processingStatus: 'pending' | 'processed' | 'failed' = 'pending';
+      let processingError: string | null = null;
       try {
         const collectionRequestId = await findLatestCollectionRequest(realmId);
         if (collectionRequestId) {
+          const { error: startedError } = await supabaseAdmin
+            .from('inbox_documents')
+            .update({ processing_status: 'processing', processing_error: null })
+            .eq('id', document.id)
+            .eq('realm_id', realmId);
+          if (startedError) throw startedError;
+
           const result: ProcessedDocumentResult = await processInboxDocument(document.id, collectionRequestId);
           await updateRegisterForDocument(
             document.id,
@@ -110,12 +117,31 @@ export async function POST(
             result.isDuplicate,
             result.duplicateOfDocumentId
           );
+
+          const { error: completedError } = await supabaseAdmin
+            .from('inbox_documents')
+            .update({ processing_status: 'processed', processing_error: null })
+            .eq('id', document.id)
+            .eq('realm_id', realmId);
+          if (completedError) throw completedError;
+          processingStatus = 'processed';
         }
-      } catch (err) {
-        console.error('Document processing error:', err);
+      } catch {
+        processingStatus = 'failed';
+        processingError = 'Evidence processing failed; retry required';
+        const { error: statusError } = await supabaseAdmin
+          .from('inbox_documents')
+          .update({ processing_status: 'failed', processing_error: processingError })
+          .eq('id', document.id)
+          .eq('realm_id', realmId);
+        console.error('Document processing failed; retry state stored', statusError ? 'failed' : 'updated');
       }
 
-      uploadedDocuments.push(document);
+      uploadedDocuments.push({
+        ...document,
+        processing_status: processingStatus,
+        processing_error: processingError,
+      });
     }
 
     return NextResponse.json({ documents: uploadedDocuments }, { status: 201 });
@@ -125,67 +151,9 @@ export async function POST(
   }
 }
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ token: string }> }
-) {
-  try {
-    const { token } = await params;
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    if (!id) {
-      // List all documents for this inbox
-      const { data: inbox, error: inboxError } = await supabaseAdmin
-        .from('company_inboxes')
-        .select('realm_id')
-        .eq('token', token)
-        .single();
-
-      if (inboxError || !inbox) {
-        return NextResponse.json({ error: 'Invalid inbox link' }, { status: 404 });
-      }
-
-      const { data: documents, error } = await supabaseAdmin
-        .from('inbox_documents')
-        .select('*')
-        .eq('realm_id', inbox.realm_id)
-        .like('storage_path', `inbox/${inbox.realm_id}/${token}/%`)
-        .order('uploaded_at', { ascending: false });
-
-      if (error) {
-        console.error('Documents fetch error:', error);
-        return NextResponse.json({ error: 'Failed to fetch documents' }, { status: 500 });
-      }
-
-      return NextResponse.json({ documents });
-    }
-
-    // Get single document metadata
-    const { data: document, error } = await supabaseAdmin
-      .from('inbox_documents')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error || !document) {
-      return NextResponse.json({ error: 'Document not found' }, { status: 404 });
-    }
-
-    // Create signed URL for download (valid for 1 hour)
-    const { data: signedUrl, error: urlError } = await supabaseAdmin.storage
-      .from('evidence')
-      .createSignedUrl(document.storage_path, 3600);
-
-    if (urlError || !signedUrl) {
-      console.error('Error creating signed URL:', urlError);
-      return NextResponse.json({ error: 'Failed to create download link' }, { status: 500 });
-    }
-
-    // Redirect to signed URL
-    return NextResponse.redirect(signedUrl.signedUrl);
-  } catch (error) {
-    console.error('Document fetch error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
-  }
+export async function GET() {
+  return NextResponse.json(
+    { error: 'Document listing and downloads are not available through public upload links' },
+    { status: 405 }
+  );
 }

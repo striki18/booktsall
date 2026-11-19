@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
 import { getTransactions, normalizeTransactionList } from '@/lib/quickbooks';
 import { getAttachables, normalizeAttachables } from '@/lib/quickbooks';
-import { buildEvidenceRegister } from '@/lib/evidence';
+import { applyStoredEvidenceReviewDecisions, buildQboEvidenceRegister } from '@/lib/qbo-evidence-register';
 import { generateAndSaveCsvs } from '@/lib/output';
 
 /**
@@ -12,10 +13,10 @@ import { generateAndSaveCsvs } from '@/lib/output';
  */
 export async function GET(request: Request) {
   try {
+    const { realmId } = await requireAuth();
     const { searchParams } = new URL(request.url);
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
-    const companyName = searchParams.get('companyName') || 'sandbox_company';
 
     if (!startDate || !endDate) {
       return NextResponse.json(
@@ -25,18 +26,25 @@ export async function GET(request: Request) {
     }
 
     // 1. Fetch raw data
-    const rawTxns = await getTransactions(startDate, endDate);
-    const rawAttach = await getAttachables();
+    const rawTxns = await getTransactions(startDate, endDate, realmId);
+    const rawAttach = await getAttachables(realmId);
 
     // 2. Normalize
     const txns = normalizeTransactionList(rawTxns);
     const attach = normalizeAttachables(rawAttach);
 
-    // 3. Build register
-    const register = buildEvidenceRegister(txns, attach);
+    // 3. Build the evidence-aware register and overlay durable human decisions
+    const computedRegister = await buildQboEvidenceRegister({
+      realmId,
+      startDate,
+      endDate,
+      transactions: txns,
+      attachables: attach,
+    });
+    const register = await applyStoredEvidenceReviewDecisions(computedRegister, realmId);
 
     // 4. Generate and save CSVs
-    const result = await generateAndSaveCsvs(register, companyName, startDate, endDate);
+    const result = await generateAndSaveCsvs(register, realmId, startDate, endDate);
 
     return NextResponse.json({
       success: true,
@@ -46,7 +54,8 @@ export async function GET(request: Request) {
       missingCount: result.missingCount,
     });
   } catch (e: any) {
-    console.error('CSV generation error:', e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    console.error('CSV generation error');
+    const status = e.message === 'UNAUTHORIZED' ? 401 : e.message === 'NO_REALM_ID' || e.message === 'FORBIDDEN' ? 403 : 500;
+    return NextResponse.json({ error: status === 500 ? 'CSV generation failed' : e.message }, { status });
   }
 }

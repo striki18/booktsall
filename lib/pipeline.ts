@@ -13,25 +13,19 @@ import {
   downloadFile,
 } from './quickbooks';
 
-import {
-  populateQboEvidenceRegister,
-  getRegisterEntries,
-  updateRegisterForDocument,
-} from './qbo-evidence-register';
+import { applyStoredEvidenceReviewDecisions, buildQboEvidenceRegister } from './qbo-evidence-register';
 
 import { generateAndSaveCsvs, splitEvidenceRegister } from './output';
 
-import { generateZip } from './zip';
+import { generateZip, PackageDownloadFailure, verifyZip } from './zip';
 
-import {
-  processCollectionRequestDocuments,
-  downloadDocument,
-} from './document-extraction';
+import { downloadDocument } from './document-extraction';
 
 import { supabaseAdmin } from './supabase-admin';
 
 export interface PipelineResult {
   success: boolean;
+  completionStatus?: 'complete' | 'partial';
   zipPath?: string;
   error?: {
     stage: string;
@@ -173,7 +167,7 @@ export async function generatePackage(
     let rawTransactions: any;
 
     try {
-      rawTransactions = await getTransactions(startDate, endDate);
+      rawTransactions = await getTransactions(startDate, endDate, companyId);
     } catch (e: any) {
       return handleFailure(
         'Transaction Retrieval',
@@ -207,7 +201,7 @@ export async function generatePackage(
     let rawAttachables: any;
 
     try {
-      rawAttachables = await getAttachables();
+      rawAttachables = await getAttachables(companyId);
     } catch (e: any) {
       return handleFailure(
         'Attachable Retrieval',
@@ -241,37 +235,20 @@ export async function generatePackage(
     let register: any[];
 
     try {
-      await populateQboEvidenceRegister(companyId, startDate, endDate);
-
-      const entries = await getRegisterEntries(
-        companyId,
-        undefined,
-        startDate,
-        endDate
-      );
-
+      const computedEntries = await buildQboEvidenceRegister({ realmId: companyId, startDate, endDate, transactions, attachables });
+      const entries = await applyStoredEvidenceReviewDecisions(computedEntries, companyId);
       register = entries.map((entry) => ({
-        txnId: entry.qboTxnId,
-        qboTxnId: entry.qboTxnId,
-        txnType: entry.qboTxnType,
-        date: entry.qboTxnDate,
-        vendor: entry.qboTxnVendor,
-        amount: entry.qboTxnAmount,
-        docNumber: entry.qboTxnDocNumber,
-        attachableId: entry.attachableId,
-        fileName: entry.attachmentFilename,
-        fileSize: entry.attachmentFileSize,
-        downloadUrl: entry.attachmentDownloadUrl,
-        entityType: null,
-        entityId: null,
-        orphaned: entry.registerState === 'WRONG_MATCHED',
-        hasAttachment: !!entry.attachmentFilename,
-        registerState: entry.registerState,
-        matchedDocumentId: entry.matchedDocumentId,
-        matchConfidence: entry.matchConfidence,
-        matchFieldDetails: entry.matchFieldDetails,
-        correctQboTxnId: entry.correctQboTxnId,
-        reviewCandidateTxnIds: entry.reviewCandidateTxnIds,
+        id: entry.id,
+        txnId: entry.qboTxnId, qboTxnId: entry.qboTxnId, txnType: entry.qboTxnType,
+        date: entry.qboTxnDate, vendor: entry.qboTxnVendor, amount: entry.qboTxnAmount,
+        docNumber: entry.qboTxnDocNumber, attachableId: entry.attachableId,
+        fileName: entry.attachmentFilename, fileSize: entry.attachmentFileSize,
+        downloadUrl: entry.attachmentDownloadUrl, entityType: null, entityId: null,
+        orphaned: entry.registerState === 'WRONG_MATCHED', hasAttachment: !!entry.attachmentFilename,
+        registerState: entry.registerState, matchedDocumentId: entry.matchedDocumentId,
+        matchConfidence: entry.matchConfidence, matchFieldDetails: entry.matchFieldDetails,
+        correctQboTxnId: entry.correctQboTxnId, reviewCandidateTxnIds: entry.reviewCandidateTxnIds,
+        humanApproved: entry.humanApproved, reviewDecision: entry.reviewDecision, reviewHistory: entry.reviewHistory,
       }));
     } catch (e: any) {
       return handleFailure(
@@ -300,127 +277,12 @@ export async function generatePackage(
     );
 
     // ========================================================================
-    // STEP 1: Process inbox documents and update evidence register
-    // ========================================================================
-
-    logProgress(
-      'Inbox Document Processing',
-      'started',
-      'Processing uploaded documents and updating evidence register'
-    );
-
-    try {
-      const { data: inboxDocuments, error: docsError } = await supabaseAdmin
-        .from('inbox_documents')
-        .select('id')
-        .eq('realm_id', companyId)
-        .is('processed_at', null);
-
-      if (docsError) {
-        throw new Error(
-          `Failed to fetch inbox documents: ${docsError.message}`
-        );
-      }
-
-      // Fetch a collection request for this company to pass to processing
-      const { data: collectionRequest } = await supabaseAdmin
-        .from('collection_requests')
-        .select('id')
-        .eq('realm_id', companyId)
-        .limit(1)
-        .single();
-
-      const collectionRequestId = collectionRequest?.id;
-
-      const allProcessingResults: {
-        documentId: string;
-        matchResult: any;
-        extractedFields: any;
-      }[] = [];
-
-      if (collectionRequestId) {
-        const results =
-          await processCollectionRequestDocuments(collectionRequestId);
-
-        for (const result of results) {
-          const { matchResult, extractedFields } = result;
-
-          if (result.isDuplicate) {
-            continue;
-          }
-
-          await updateRegisterForDocument(
-            matchResult.documentId,
-            companyId,
-            collectionRequestId,
-            matchResult,
-            extractedFields
-          );
-
-          allProcessingResults.push({
-            documentId: matchResult.documentId,
-            matchResult,
-            extractedFields,
-          });
-        }
-      } else {
-        console.log('No collection request found for company, skipping inbox document processing');
-      }
-
-      const updatedEntries = await getRegisterEntries(
-        companyId,
-        undefined,
-        startDate,
-        endDate
-      );
-
-      register = updatedEntries.map((entry) => ({
-        txnId: entry.qboTxnId,
-        qboTxnId: entry.qboTxnId,
-        txnType: entry.qboTxnType,
-        date: entry.qboTxnDate,
-        vendor: entry.qboTxnVendor,
-        amount: entry.qboTxnAmount,
-        docNumber: entry.qboTxnDocNumber,
-        attachableId: entry.attachableId,
-        fileName: entry.attachmentFilename,
-        fileSize: entry.attachmentFileSize,
-        downloadUrl: entry.attachmentDownloadUrl,
-        entityType: null,
-        entityId: null,
-        orphaned: entry.registerState === 'WRONG_MATCHED',
-        hasAttachment: !!entry.attachmentFilename,
-        registerState: entry.registerState,
-        matchedDocumentId: entry.matchedDocumentId,
-        matchConfidence: entry.matchConfidence,
-        matchFieldDetails: entry.matchFieldDetails,
-        correctQboTxnId: entry.correctQboTxnId,
-        reviewCandidateTxnIds: entry.reviewCandidateTxnIds,
-      }));
-
-      logProgress(
-        'Inbox Document Processing',
-        'completed',
-        `Processed ${allProcessingResults.length} documents`,
-        {
-          processedCount: allProcessingResults.length,
-        }
-      );
-    } catch (e: any) {
-      return handleFailure(
-        'Inbox Document Processing',
-        `Failed to process inbox documents: ${e.message}`,
-        { error: e.message }
-      );
-    }
-
-    // ========================================================================
     // STAGE 4: Evidence Document Download
     // ========================================================================
 
     const entriesWithEvidence = register.filter(
       (e) =>
-        e.registerState !== 'MISSING' &&
+        (e.registerState === 'MATCHED' || e.humanApproved === true) &&
         e.matchedDocumentId !== null &&
         e.matchedDocumentId !== undefined
     );
@@ -437,9 +299,12 @@ export async function generatePackage(
       `Downloading ${uniqueEvidenceDocumentIds.length} evidence documents`
     );
 
+    const downloadFailures: PackageDownloadFailure[] = [];
+
     let downloadResult: {
       successfulCount: number;
       failedCount: number;
+      failures: PackageDownloadFailure[];
       successful: {
         matchedDocumentId: string;
         fileName: string;
@@ -455,12 +320,16 @@ export async function generatePackage(
       }[] = [];
 
       let failedCount = 0;
+      const clientFailures: PackageDownloadFailure[] = [];
 
       for (const matchedDocumentId of uniqueEvidenceDocumentIds) {
+        const registerEntry = register.find((entry: any) => String(entry.matchedDocumentId) === matchedDocumentId);
+        const sourceFileName = registerEntry?.attachmentFilename ?? registerEntry?.fileName ?? 'unknown';
         try {
           const { data: docRecord, error: docError } = await supabaseAdmin
             .from('inbox_documents')
             .select('storage_path, filename')
+            .eq('realm_id', companyId)
             .eq('id', matchedDocumentId)
             .single();
 
@@ -469,6 +338,7 @@ export async function generatePackage(
               `Inbox document not found for ID: ${matchedDocumentId}`
             );
             failedCount++;
+            clientFailures.push({ source: 'client_upload', referenceId: matchedDocumentId, fileName: sourceFileName, reason: 'source_not_found' });
             continue;
           }
 
@@ -479,6 +349,7 @@ export async function generatePackage(
               `Empty document downloaded for ID: ${matchedDocumentId}`
             );
             failedCount++;
+            clientFailures.push({ source: 'client_upload', referenceId: matchedDocumentId, fileName: sourceFileName, reason: 'empty_file' });
             continue;
           }
 
@@ -497,12 +368,14 @@ export async function generatePackage(
           );
 
           failedCount++;
+          clientFailures.push({ source: 'client_upload', referenceId: matchedDocumentId, fileName: sourceFileName, reason: 'download_failed' });
         }
       }
 
       downloadResult = {
         successfulCount: successfulDownloads.length,
         failedCount,
+        failures: clientFailures,
         successful: successfulDownloads,
       };
     } catch (e: any) {
@@ -515,6 +388,7 @@ export async function generatePackage(
 
     stats.successfulDownloadCount = downloadResult.successfulCount;
     stats.failedDownloadCount = downloadResult.failedCount;
+    downloadFailures.push(...downloadResult.failures);
 
     let successfulEvidenceFiles = downloadResult.successful;
 
@@ -522,13 +396,11 @@ export async function generatePackage(
     // STAGE 4b: QBO-Side-Only Attachment Download
     // ========================================================================
 
-    // Identify QBO-side-only attachments: registerState in MATCHED/WRONG_MATCHED/REVIEW_REQUIRED,
+    // Include matched or human-approved QBO-side attachments without an inbox document,
     // attachableId is non-null, matchedDocumentId is null
     const qboSideOnlyCandidates = register.filter(
       (e) =>
-        (e.registerState === 'MATCHED' ||
-          e.registerState === 'WRONG_MATCHED' ||
-          e.registerState === 'REVIEW_REQUIRED') &&
+        (e.registerState === 'MATCHED' || e.humanApproved === true) &&
         e.attachableId !== null &&
         e.attachableId !== undefined &&
         (e.matchedDocumentId === null || e.matchedDocumentId === undefined)
@@ -559,7 +431,7 @@ export async function generatePackage(
 
       let qboSuccessCount = 0;
       let qboFailedCount = 0;
-      const qboFailedDownloads: { attachableId: string; error: string }[] = [];
+      const qboFailedDownloads: PackageDownloadFailure[] = [];
 
       try {
         for (const entry of qboAttachablesToDownload) {
@@ -568,7 +440,7 @@ export async function generatePackage(
 
           try {
             // Download using existing downloadFile helper
-            const result = await downloadFile(attachableId, originalFileName, tempDir);
+            const result = await downloadFile(attachableId, originalFileName, tempDir, undefined, companyId);
 
             if (result.success && result.filePath) {
               // Read the downloaded file into Buffer
@@ -590,21 +462,23 @@ export async function generatePackage(
               } else {
                 console.warn(`Empty file downloaded for attachable ${attachableId}`);
                 qboFailedCount++;
-                qboFailedDownloads.push({ attachableId, error: 'Empty file downloaded' });
+                qboFailedDownloads.push({ source: 'quickbooks', referenceId: attachableId, fileName: originalFileName, reason: 'empty_file' });
               }
             } else {
               const errorMsg = result.error || 'Download failed';
               console.warn(`Failed to download attachable ${attachableId}: ${errorMsg}`);
               qboFailedCount++;
-              qboFailedDownloads.push({ attachableId, error: errorMsg });
+              qboFailedDownloads.push({ source: 'quickbooks', referenceId: attachableId, fileName: originalFileName, reason: 'download_failed' });
             }
           } catch (downloadError: unknown) {
             const errorMsg = downloadError instanceof Error ? downloadError.message : String(downloadError);
             console.warn(`Exception downloading attachable ${attachableId}: ${errorMsg}`);
             qboFailedCount++;
-            qboFailedDownloads.push({ attachableId, error: errorMsg });
+            qboFailedDownloads.push({ source: 'quickbooks', referenceId: attachableId, fileName: originalFileName, reason: 'download_failed' });
           }
         }
+
+        downloadFailures.push(...qboFailedDownloads);
 
         // Update stats with QBO-side downloads
         stats.successfulDownloadCount += qboSuccessCount;
@@ -624,7 +498,7 @@ export async function generatePackage(
         if (qboFailedDownloads.length > 0) {
           console.log('\n--- QBO-Side-Only Attachment Download Failures ---');
           for (const failure of qboFailedDownloads) {
-            console.log(`  Attachable ID: ${failure.attachableId} | Error: ${failure.error}`);
+            console.log(`  Attachable ID: ${failure.referenceId} | Reason: ${failure.reason}`);
           }
           console.log('----------------------------------------------------\n');
         }
@@ -710,7 +584,8 @@ export async function generatePackage(
         companyId,
         startDate,
         endDate,
-        successfulEvidenceFiles
+        successfulEvidenceFiles,
+        downloadFailures
       );
     } catch (e: any) {
       return handleFailure(
@@ -720,6 +595,28 @@ export async function generatePackage(
       );
     }
 
+    let zipVerification;
+    try {
+      zipVerification = await verifyZip(zipPath, companyId, startDate, endDate);
+    } catch (verificationError) {
+      return handleFailure('ZIP Verification', 'Generated ZIP could not be verified', { error: verificationError instanceof Error ? verificationError.message : 'Unknown verification error' });
+    }
+    const zipIsVerified = zipVerification.zipCreated
+      && zipVerification.filenameValid
+      && zipVerification.validArchive
+      && zipVerification.evidenceRegisterPresent
+      && zipVerification.missingDocumentsPresent
+      && zipVerification.packageManifestPresent
+      && zipVerification.manifestReadable
+      && zipVerification.manifestFilesPresent
+      && zipVerification.manifestHashesValid
+      && zipVerification.attachmentsNonEmpty
+      && zipVerification.noExpectedFilesMissing
+      && zipVerification.noUnexpectedFiles
+      && zipVerification.contentsMatchSource;
+    if (!zipIsVerified) {
+      return handleFailure('ZIP Verification', 'Generated ZIP failed package verification', { errors: zipVerification.errors });
+    }
     const fs = await import('fs');
     const zipStat = fs.statSync(zipPath);
     stats.zipSizeBytes = zipStat.size;
@@ -769,6 +666,7 @@ export async function generatePackage(
 
     return {
       success: true,
+      completionStatus: stats.failedDownloadCount > 0 ? 'partial' : 'complete',
       zipPath,
       stats,
     };

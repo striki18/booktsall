@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { cookies } from 'next/headers';
+import { requireUser } from '@/lib/auth';
 
 /**
  * Helper to exchange authorization code for tokens using PKCE.
@@ -40,6 +40,12 @@ async function exchangeCode(
 }
 
 export async function GET(request: Request) {
+  let user: any;
+  try {
+    user = await requireUser();
+  } catch {
+    return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+  }
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
@@ -49,16 +55,17 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Missing required query parameters' }, { status: 400 });
   }
 
+  const expectedRealmId = process.env.INTUIT_REALM_ID;
+  if (!expectedRealmId || realmId !== expectedRealmId) {
+    return NextResponse.json({ error: 'QuickBooks company is not authorized' }, { status: 403 });
+  }
+
   // Retrieve cookies from the request (async in Next.js). Await the Promise as required by Next.js 16.
   const cookieStore = await cookies();
   const storedState = cookieStore.get('intuit_oauth_state')?.value;
   const codeVerifier = cookieStore.get('intuit_code_verifier')?.value;
 
   // Temporary server‑side logging for debugging the OAuth flow
-  console.log('🔍 OAuth callback received:');
-  console.log('  Query state:', state);
-  console.log('  Stored state cookie:', storedState);
-  console.log('  Code verifier present:', !!codeVerifier);
 
   if (state !== storedState) {
     return NextResponse.json({ error: 'Invalid OAuth state' }, { status: 400 });
@@ -77,7 +84,7 @@ export async function GET(request: Request) {
   const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
 
     // Upsert token row in Supabase
-    const { error } = await supabase
+    const { error } = await supabaseAdmin
       .from('quickbooks_tokens')
       .upsert({
         realm_id: realmId,
@@ -91,18 +98,21 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Database error' }, { status: 500 });
     }
 
-    // Store realm_id in user metadata for session-based realm resolution
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        await supabaseAdmin.auth.admin.updateUserById(user.id, {
-          user_metadata: { ...user.user_metadata, realm_id: realmId },
-        });
-      }
-    } catch (metaError) {
-      // Non-fatal: log but don't block the OAuth flow
-      console.warn('Failed to update user metadata with realm_id:', metaError);
-    }
+    const { error: membershipError } = await supabaseAdmin
+      .from('qbo_company_memberships')
+      .upsert({ user_id: user.id, realm_id: realmId }, { onConflict: 'user_id,realm_id' });
+    if (membershipError) throw membershipError;
+
+    // Bind the selected company to server-controlled user metadata.
+    const realmIds = new Set<string>([
+      ...(Array.isArray(user.app_metadata?.qbo_realm_ids) ? user.app_metadata.qbo_realm_ids : []),
+      ...(typeof user.app_metadata?.realm_id === 'string' ? [user.app_metadata.realm_id] : []),
+      realmId,
+    ]);
+    const { error: metadataError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
+      app_metadata: { ...user.app_metadata, realm_id: realmId, qbo_realm_ids: [...realmIds] },
+    });
+    if (metadataError) throw metadataError;
 
     // Clear cookies
     // Use an absolute URL for the redirect as required by Next.js 16.
@@ -111,12 +121,11 @@ export async function GET(request: Request) {
     resp.cookies.delete('intuit_code_verifier');
     return resp;
   } catch (e: any) {
-    // Log the error but still redirect to the QuickBooks page to avoid a 500/400 response.
-    // This ensures the OAuth flow completes with a 307 redirect even when the
-    // token exchange fails (e.g., during local testing with dummy codes).
-    console.error('OAuth callback error (non‑fatal):', e);
-    const resp = NextResponse.redirect(new URL('/quickbooks', request.url));
-    // Clear cookies to avoid stale state.
+    // Report failure explicitly; never make a failed OAuth exchange look successful.
+    console.error('OAuth callback failed');
+    const failureUrl = new URL('/quickbooks', request.url);
+    failureUrl.searchParams.set('oauth', 'failed');
+    const resp = NextResponse.redirect(failureUrl);
     resp.cookies.delete('intuit_oauth_state');
     resp.cookies.delete('intuit_code_verifier');
     return resp;

@@ -1,6 +1,5 @@
 /* ==========================================================================
-   AUDITREADY — Premium SaaS Design System
-   Apple-like, financial-grade interface
+   Z E V I D T — Workspace interface
    ========================================================================== */
 
 /* ---- CSS Custom Properties (Design Tokens) ---- */
@@ -1384,4 +1383,113 @@ body {
   .cardActions .btn {
     width: 100%;
   }
+}
+
+/* Zevidt's primary navigation lives at the top; workspace views stay close to the work. */
+.container {
+  display: block;
+  min-height: 100vh;
+  background: #f7f8f6;
+}
+
+.main,
+.main.withSidebarOffset {
+  width: min(1320px, calc(100% - 88px));
+  max-width: none;
+  min-height: calc(100vh - 76px);
+  margin: 0 auto;
+  padding: 30px 0 72px;
+}
+
+.sectionTabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 0 0 16px;
+  border-bottom: 1px solid #e2e7e3;
+}
+
+.sectionTab {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  padding: 0 13px;
+  color: #65716b;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background .16s ease, color .16s ease;
+}
+
+.sectionTab:hover { background: #edf3ef; color: #176b52; }
+.sectionTabActive { background: #e8f3ee; color: #10513e; }
+
+.header {
+  position: static;
+  min-height: 106px;
+  height: auto;
+  gap: 24px;
+  margin: 0 0 22px;
+  padding: 24px 0 20px;
+  border-bottom: 0;
+  background: transparent;
+}
+
+.pageTitle { font-size: clamp(26px, 3vw, 34px); letter-spacing: -.045em; }
+.pageSubtitle { margin-top: 2px; color: #75817b; }
+.headerRight { gap: 10px; }
+
+@media (max-width: 1024px) {
+  .main,
+  .main.withSidebarOffset { width: min(100% - 40px, 900px); margin: 0 auto; padding: 22px 0 56px; }
+  .mobileMenuButton { display: none; }
+  .header { padding: 20px 0; }
+}
+
+@media (max-width: 620px) {
+  .main,
+  .main.withSidebarOffset { width: calc(100% - 32px); padding-top: 16px; }
+  .sectionTabs { margin-right: -16px; padding-bottom: 12px; }
+  .header { align-items: flex-start; flex-direction: column; }
+  .headerRight { width: 100%; flex-wrap: wrap; }
+}
+
+.activityCard { overflow: hidden; }
+.activityHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.activityHeading .cardTitle { margin-bottom: 5px; }
+.activityDescription { color: #77837d; font-size: 13px; }
+.activityUpdated { padding-top: 5px; color: #87928c; font-size: 11px; white-space: nowrap; }
+.activityFilters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin: 20px 0 14px; padding: 0; border: 0; background: transparent; }
+.activityDateField { display: grid; gap: 6px; color: #64716a; font-size: 11px; font-weight: 650; }
+.activityDateField input { min-height: 40px; border: 1px solid #dce4de; border-radius: 10px; background: #fff; padding: 0 10px; color: #25352d; font: inherit; font-size: 13px; }
+.activitySummary { margin: 0 0 10px; color: #78847e; font-size: 11px; }
+.activityTableWrap { overflow-x: auto; border: 1px solid #e5eae6; border-radius: 14px; background: #fff; }
+.activityTable { width: 100%; min-width: 880px; border-collapse: collapse; text-align: left; }
+.activityTable th { padding: 12px 13px; border-bottom: 1px solid #e5eae6; background: #f8faf8; color: #77837c; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+.activityTable td { padding: 13px; border-bottom: 1px solid #edf0ed; color: #34443b; font-size: 12px; vertical-align: top; }
+.activityTable tr:last-child td { border-bottom: 0; }
+.activityQboLink { color: #176b52; font-size: 11px; font-weight: 650; text-decoration: none; white-space: nowrap; }
+.activityQboLink:hover { text-decoration: underline; }
+.noLinkedFile { color: #89938d; font-size: 11px; }
+.activityFileDetails { min-width: 90px; }
+.activityFileDetails summary { color: #176b52; font-size: 11px; font-weight: 650; cursor: pointer; }
+.activityFileDetails ul { display: grid; gap: 5px; max-width: 260px; margin: 8px 0 0; padding-left: 17px; color: #5e6c64; font-size: 11px; overflow-wrap: anywhere; }
+.activityEmpty,
+.activityError,
+.activityWarning { margin: 10px 0 0; border-radius: 12px; padding: 13px 15px; font-size: 12px; }
+.activityEmpty { background: #f5f8f5; color: #69766f; }
+.activityError { border: 1px solid #f1cdcd; background: #fff2f2; color: #a43f3f; }
+.activityWarning { border: 1px solid #efdfb5; background: #fffbef; color: #8a681d; }
+
+@media (max-width: 620px) {
+  .activityHeading { flex-direction: column; gap: 4px; }
+  .activityFilters { align-items: stretch; }
+  .activityDateField { flex: 1 1 145px; }
+  .activityFilters > button { width: 100%; }
 }

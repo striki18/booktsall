@@ -1,5 +1,3 @@
-import { StoredDocument } from "./types";
-
 export function formatBytes(bytes: number) {
   if (bytes === 0) {
     return "0 B";
@@ -21,16 +19,4 @@ export function formatUploadDate(value: string) {
     day: "numeric",
     year: "numeric",
   }).format(new Date(value));
-}
-
-export function dataUrlToBlob(document: StoredDocument) {
-  const [header, base64] = document.dataUrl.split(",");
-  const contentType =
-    header.match(/data:(.*);base64/)?.[1] || "application/octet-stream";
-  const byteCharacters = atob(base64);
-  const byteNumbers = Array.from(byteCharacters, (character) =>
-    character.charCodeAt(0),
-  );
-
-  return new Blob([new Uint8Array(byteNumbers)], { type: contentType });
 }

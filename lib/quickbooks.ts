@@ -2,7 +2,7 @@
  * QuickBooks API client handling token retrieval, auto‑refresh, and helper methods.
  * It uses the Supabase table `quickbooks_tokens` for persistent storage.
  */
-import { supabase } from './supabase';
+import { supabaseAdmin } from './supabase-admin';
 import { withApiRetry, withDownloadRetry } from './retry';
 import { withRetry, DOWNLOAD_RETRY_CONFIG, sleep } from './retry';
 
@@ -30,16 +30,15 @@ function setRefreshPromise(realmId: string, promise: Promise<string | undefined>
 
 /** Retrieve stored token (Supabase preferred, otherwise in‑memory). */
 export async function getStoredToken(realmId?: string) {
+  if (!realmId) return null;
   // If Supabase client is configured, query the table.
   if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-    let query = supabase
+    let query = supabaseAdmin
       .from('quickbooks_tokens')
       .select('*')
       .order('expires_at', { ascending: true })
       .limit(1);
-    if (realmId) {
-      query = query.eq('realm_id', realmId);
-    }
+    query = query.eq('realm_id', realmId);
     const { data, error } = await query.single();
     if (!error && data) return data;
   }
@@ -52,17 +51,9 @@ export async function getStoredToken(realmId?: string) {
 }
 
 /** Store token (used for both initial exchange and refresh). */
-export async function storeToken(tokenData: any, realmId?: string) {
-  // Determine the realm identifier to store.
-  let finalRealmId = realmId ?? tokenData.realmId;
-  if (!finalRealmId) {
-    const existing = await getStoredToken();
-    finalRealmId = existing?.realm_id || '';
-  }
+export async function storeToken(tokenData: any, realmId: string) {
+  if (!realmId) throw new Error('Realm ID is required to store a QuickBooks token');
 
-  // Convert expires_at to a proper timestamp for the DB column.
-  // QuickBooks may return `expires_at` as epoch seconds (number). Convert it
-  // to an ISO‑8601 string so it matches the `timestamptz` column type.
   const expiresAt = tokenData.expires_at
     ? typeof tokenData.expires_at === 'number'
       ? new Date(tokenData.expires_at * 1000).toISOString()
@@ -70,24 +61,21 @@ export async function storeToken(tokenData: any, realmId?: string) {
     : new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString();
 
   if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-    // Use upsert with conflict on realm_id to avoid duplicate rows.
-    const { error } = await supabase.from('quickbooks_tokens').upsert([
-      {
-        realm_id: finalRealmId,
-        access_token: tokenData.access_token,
-        refresh_token: tokenData.refresh_token,
-        expires_at: expiresAt,
-      },
-    ], { onConflict: 'realm_id' });
+    const { error } = await supabaseAdmin.from('quickbooks_tokens').upsert([{
+      realm_id: realmId,
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      expires_at: expiresAt,
+    }], { onConflict: 'realm_id' });
     if (error) throw error;
     return;
   }
-  // In‑memory fallback.
-  memoryCache = { ...tokenData, realm_id: finalRealmId, expires_at: expiresAt };
+
+  memoryCache = { ...tokenData, realm_id: realmId, expires_at: expiresAt };
 }
 
 /** Refresh the access token using the stored refresh token. */
-export async function refreshAccessToken(refreshToken: string) {
+export async function refreshAccessToken(refreshToken: string, realmId: string) {
   const tokenUrl = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
   const basicAuth = Buffer.from(
     `${process.env.INTUIT_CLIENT_ID}:${process.env.INTUIT_CLIENT_SECRET}`
@@ -123,7 +111,7 @@ export async function refreshAccessToken(refreshToken: string) {
       }
 
       const data = await res.json();
-      await storeToken(data);
+      await storeToken(data, realmId);
       return data.access_token;
     } finally {
       clearTimeout(timeoutId);
@@ -139,7 +127,7 @@ export async function refreshAccessToken(refreshToken: string) {
 }
 
 /** Get a valid access token, refreshing if needed. */
-export async function getAccessToken(realmId?: string) {
+export async function getAccessToken(realmId: string) {
   const token = await getStoredToken(realmId);
   if (!token) throw new Error('No QuickBooks token found');
   const resolvedRealmId = token.realm_id || realmId || '';
@@ -188,7 +176,7 @@ export async function getAccessToken(realmId?: string) {
           return freshToken.access_token;
         }
         // Need to do the refresh ourselves
-        const newAccessToken = await refreshAccessToken(freshToken.refresh_token);
+        const newAccessToken = await refreshAccessToken(freshToken.refresh_token, resolvedRealmId);
         return newAccessToken;
       } catch (error) {
         // On failure, reset the promise so subsequent callers can try again
@@ -216,29 +204,28 @@ export async function getAccessToken(realmId?: string) {
 }
 
 /** Helper to fetch CompanyInfo from QuickBooks. */
-export async function getCompanyInfo() {
+export async function getCompanyInfo(requestedRealmId?: string) {
+  if (!requestedRealmId) throw new Error('Realm ID is required');
+  if (!requestedRealmId) throw new Error('Realm ID is required');
   // Temporary server‑side logging (no secrets)
-  const stored = await getStoredToken();
+  const stored = await getStoredToken(requestedRealmId);
   const tokenFound = !!stored;
   const nowSec = Math.floor(Date.now() / 1000);
   const expiresAtSec = typeof stored?.expires_at === 'string'
     ? Math.floor(new Date(stored.expires_at).getTime() / 1000)
     : stored?.expires_at;
   const tokenExpired = tokenFound && expiresAtSec ? expiresAtSec <= nowSec : false;
-  console.log('🔍 Token expires_at raw:', stored?.expires_at);
-  console.log('🔍 Token expiresAtSec:', expiresAtSec, 'nowSec:', nowSec);
-  console.log('🔍 QuickBooks CompanyInfo request:');
-  console.log('  realmId:', stored?.realm_id || process.env.INTUIT_REALM_ID);
   console.log('  token found:', tokenFound);
   console.log('  token expired:', tokenExpired);
 
   // Timing: getAccessToken()
   const tokenStart = Date.now();
-  const accessToken = await getAccessToken();
+  if (!requestedRealmId) throw new Error('Realm ID is required');
+    const accessToken = await getAccessToken(requestedRealmId);
   const tokenDuration = Date.now() - tokenStart;
   console.log('⏱️  getAccessToken duration:', tokenDuration, 'ms');
 
-  const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
+  const realmId = requestedRealmId;
   if (!realmId) throw new Error('Realm ID not available');
 
   // Choose sandbox or production endpoint. In development (when NODE_ENV is not
@@ -291,12 +278,10 @@ export async function getCompanyInfo() {
  * This is the minimal API call required for Phase 2A verification.
  * It uses the same authentication and realm handling as `getCompanyInfo`.
  */
-export async function getTransactionReport(startDate: string, endDate: string) {
-  // Ensure we have a valid access token and realm ID.
-  const accessToken = await getAccessToken();
-  const stored = await getStoredToken();
-  const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
-  if (!realmId) throw new Error('Realm ID not available');
+export async function getTransactionReport(startDate: string, endDate: string, requestedRealmId?: string) {
+  if (!requestedRealmId) throw new Error('Realm ID is required');
+  const realmId = requestedRealmId;
+  const accessToken = await getAccessToken(realmId);
 
   // Use the sandbox domain for all requests (Phase 2A verification only).
   const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
@@ -367,18 +352,18 @@ export async function getTransactionReport(startDate: string, endDate: string) {
  *
  * Phase 10A: Wrapped with retry logic for HTTP 429 rate limiting.
  */
-export async function getTransactions(startDate: string, endDate: string) {
+export async function getTransactions(startDate: string, endDate: string, requestedRealmId?: string) {
   return withApiRetry(async () => {
     // Ensure we have a valid access token and realm ID.
-    const accessToken = await getAccessToken();
-    const stored = await getStoredToken();
-    const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
+    if (!requestedRealmId) throw new Error('Realm ID is required');
+    const accessToken = await getAccessToken(requestedRealmId);
+    const stored = await getStoredToken(requestedRealmId);
+    const realmId = requestedRealmId;
     if (!realmId) throw new Error('Realm ID not available');
 
     // Use the sandbox domain for all requests.
     const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
     const reportUrl = `${sandboxDomain}/v3/company/${realmId}/reports/TransactionList?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`;
-    console.log('🔍 TransactionList request URL:', reportUrl);
     const res = await fetch(reportUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -387,20 +372,17 @@ export async function getTransactions(startDate: string, endDate: string) {
     });
     console.log('🔍 TransactionList response status:', res.status);
     if (!res.ok) {
-      const errBody = await res.text();
-      console.error('Failed to fetch TransactionList report:', res.status, errBody);
+      await res.text();
+      console.error('Failed to fetch TransactionList report:', res.status);
       // Attach status for retry detection
       const error = new Error('Failed to fetch TransactionList report');
       (error as any).status = res.status;
       throw error;
     }
     const raw = await res.json();
-    // Log the raw response for debugging (optional). Include full JSON for inspection.
-    console.log('🔍 TransactionList raw response received');
-    console.log('🔍 Raw TransactionList content:', JSON.stringify(raw, null, 2));
-    // Perform normalization and log the result.
+    // Avoid logging financial transaction details or customer/vendor information.
     const normalized = normalizeTransactionList(raw);
-    console.log('🔍 Normalized TransactionList:', JSON.stringify(normalized, null, 2));
+    console.log('TransactionList retrieved:', normalized.length, 'transactions');
     return raw;
   });
 }
@@ -438,13 +420,14 @@ export async function getTransactions(startDate: string, endDate: string) {
  *
  * Phase 10A: Wrapped with retry logic for HTTP 429 rate limiting.
  */
-export async function getAttachables() {
+export async function getAttachables(requestedRealmId?: string) {
   return withApiRetry(async () => {
     // 1. Authenticate
-    const accessToken = await getAccessToken();
+    if (!requestedRealmId) throw new Error('Realm ID is required');
+    const accessToken = await getAccessToken(requestedRealmId);
     // 2. Resolve realm ID
-    const stored = await getStoredToken();
-    const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
+    const stored = await getStoredToken(requestedRealmId);
+    const realmId = requestedRealmId;
     if (!realmId) throw new Error('Realm ID not available');
 
     // 3. Pagination constants – QuickBooks caps at 1000 records per request.
@@ -458,8 +441,6 @@ export async function getAttachables() {
       // Build a paginated query string.
       const paginatedQuery = `${baseQuery} STARTPOSITION ${startPosition} MAXRESULTS ${PAGE_SIZE}`;
       const url = `${sandboxDomain}/v3/company/${realmId}/query?query=${encodeURIComponent(paginatedQuery)}`;
-      console.log('🔍 Attachable paginated query URL:', url);
-
       const res = await fetch(url, {
         method: 'GET',
         headers: {
@@ -469,8 +450,8 @@ export async function getAttachables() {
       });
       console.log('🔍 Attachable query response status:', res.status);
       if (!res.ok) {
-        const errBody = await res.text();
-        console.error('Failed to fetch Attachable query:', res.status, errBody);
+        await res.text();
+        console.error('Failed to fetch Attachable query:', res.status);
         // Attach status for retry detection
         const error = new Error('Failed to fetch Attachable query');
         (error as any).status = res.status;
@@ -532,14 +513,16 @@ export async function downloadFile(
   attachableId: string,
   fileName: string,
   destFolder: string,
-  failed?: DownloadFileResult[]
+  failed?: DownloadFileResult[],
+  requestedRealmId?: string
 ): Promise<DownloadFileResult> {
   try {
     // 1. Get valid access token (handles refresh automatically)
-    const accessToken = await getAccessToken();
+    if (!requestedRealmId) throw new Error('Realm ID is required');
+    const accessToken = await getAccessToken(requestedRealmId);
     // 2. Resolve realm ID
-    const stored = await getStoredToken();
-    const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
+    const stored = await getStoredToken(requestedRealmId);
+    const realmId = requestedRealmId;
     if (!realmId) throw new Error('Realm ID not available');
 
     // 3. Build the download URL using the sandbox domain
@@ -655,7 +638,8 @@ export async function downloadAllAttachments(
   matched: any[],
   startDate: string,
   endDate: string,
-  onProgress?: (progress: DownloadProgress) => void
+  onProgress?: (progress: DownloadProgress) => void,
+  requestedRealmId?: string
 ): Promise<{
   successful: Array<{
     attachableId: string;
@@ -772,7 +756,7 @@ export async function downloadAllAttachments(
     emitProgress('in_progress', newFileName);
 
     // Reuse downloadFile() - Phase 5A implementation (with retry)
-    const result = await downloadFile(attachableId, newFileName, destFolder);
+    const result = await downloadFile(attachableId, newFileName, destFolder, undefined, requestedRealmId);
 
     completed++;
     if (result.success) {
@@ -1010,16 +994,13 @@ export async function uploadAttachable(
   filename: string,
   contentType: string,
   entityType: string,
-  entityId: string
+  entityId: string,
+  requestedRealmId?: string
 ): Promise<UploadAttachableResult> {
   return withApiRetry(async () => {
-    // 1. Get valid access token (handles refresh automatically)
-    const accessToken = await getAccessToken();
-
-    // 2. Resolve realm ID
-    const stored = await getStoredToken();
-    const realmId = stored?.realm_id || process.env.INTUIT_REALM_ID;
-    if (!realmId) throw new Error('Realm ID not available');
+    if (!requestedRealmId) throw new Error('Realm ID is required');
+    const realmId = requestedRealmId;
+    const accessToken = await getAccessToken(realmId);
 
     // 3. Build the upload URL using the sandbox domain
     const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
@@ -1066,20 +1047,7 @@ export async function uploadAttachable(
     // Appending a plain string would set it to text/plain, which QBO rejects.
     formData.append('file_metadata_0', new Blob([attachableMetadata], { type: 'application/json' }));
 
-    // Debug: Log the exact Attachable metadata being sent
-    console.log('🔍 Attachable metadata being sent:', attachableMetadata);
-    console.log('🔍 FormData entries:');
-    for (const [key, value] of formData.entries()) {
-      if (value instanceof Blob) {
-        console.log(`  ${key}: Blob(size=${value.size}, type=${value.type})`);
-      } else {
-        console.log(`  ${key}: ${value}`);
-      }
-    }
-
-    console.log('🔍 Upload request URL:', uploadUrl);
-    console.log('🔍 Upload filename:', filename, 'contentType:', contentType);
-    console.log('🔍 Upload entityType:', entityType, 'entityId:', entityId);
+    console.log('QuickBooks attachment upload request prepared');
 
     // 5. Make the upload request with Bearer authorization
     const res = await fetch(uploadUrl, {
@@ -1095,16 +1063,16 @@ export async function uploadAttachable(
     console.log('🔍 Upload response status:', res.status);
 
     if (!res.ok) {
-      const errBody = await res.text();
-      console.error('Failed to upload attachment:', res.status, errBody);
+      await res.text();
+      console.error('Failed to upload attachment:', res.status);
       // Attach status for retry detection
-      const error = new Error(`Upload failed: ${res.status} ${errBody}`);
+      const error = new Error(`Upload failed: ${res.status}`);
       (error as any).status = res.status;
       throw error;
     }
 
     const result = await res.json();
-    console.log('🔍 Upload successful:', JSON.stringify(result, null, 2));
+    console.log('QuickBooks attachment upload completed');
 
     return result;
   });

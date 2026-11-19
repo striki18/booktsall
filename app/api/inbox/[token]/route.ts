@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
+import { MAX_EVIDENCE_UPLOAD_FILES, safeEvidenceStorageFilename, validateEvidenceFile } from '@/lib/upload-validation';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -58,27 +59,34 @@ export async function POST(
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
 
-    if (!files || files.length === 0) {
-      return NextResponse.json({ error: 'No files provided' }, { status: 400 });
+    if (!files || files.length === 0) return NextResponse.json({ error: 'No files provided' }, { status: 400 });
+    if (files.length > MAX_EVIDENCE_UPLOAD_FILES) return NextResponse.json({ error: 'Too many files; maximum is 10' }, { status: 400 });
+    if (files.some((file) => !(file instanceof File))) return NextResponse.json({ error: 'Only file uploads are allowed' }, { status: 400 });
+    const validations = await Promise.all(files.map((file) => validateEvidenceFile(file)));
+    const invalidIndex = validations.findIndex((validation) => !validation.valid);
+    if (invalidIndex >= 0) {
+      const invalid = validations[invalidIndex];
+      if (!invalid.valid) return NextResponse.json({ error: 'File ' + (invalidIndex + 1) + ': ' + invalid.error }, { status: 400 });
     }
+    const contentTypes = validations.map((validation) => {
+      if (!validation.valid) throw new Error('Upload validation failed');
+      return validation.contentType;
+    });
 
     const uploadedDocuments = [];
 
     for (const file of files) {
-      // Validate file
-      if (file.size === 0) {
-        continue;
-      }
+      const contentType = contentTypes[files.indexOf(file)];
 
       // Generate storage path: inbox/{realm_id}/{document_id}/{filename}
       const documentId = crypto.randomUUID();
-      const storagePath = `inbox/${inbox.realm_id}/${documentId}/${file.name}`;
+      const storagePath = `inbox/${inbox.realm_id}/${documentId}/${safeEvidenceStorageFilename(file.name)}`;
 
       // Upload to Supabase Storage
       const { error: uploadError } = await supabaseAdmin.storage
         .from('evidence')
         .upload(storagePath, file, {
-          contentType: file.type,
+          contentType,
           upsert: false,
         });
 
@@ -94,14 +102,16 @@ export async function POST(
           realm_id: inbox.realm_id,
           storage_path: storagePath,
           filename: file.name,
-          content_type: file.type,
+          content_type: contentType,
           file_size: file.size,
         })
         .select()
         .single();
 
       if (docError) {
-        console.error('Document metadata error:', docError);
+        const { error: cleanupError } = await supabaseAdmin.storage.from('evidence').remove([storagePath]);
+        console.error('Document metadata save failed; uploaded object cleanup attempted', cleanupError ? 'failed' : 'completed');
+        return NextResponse.json({ error: cleanupError ? 'Document metadata failed and uploaded file cleanup failed' : 'Document metadata could not be saved' }, { status: 500 });
         return NextResponse.json({ error: `Failed to save metadata for ${file.name}` }, { status: 500 });
       }
 

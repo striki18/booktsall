@@ -49,6 +49,37 @@ export async function listZipContents(zipPath: string): Promise<ZipEntry[]> {
   });
 }
 
+export async function extractZipFileBuffer(zipPath: string, fileName: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    yauzl.open(zipPath, { lazyEntries: true }, (err, zipfile) => {
+      if (err || !zipfile) return reject(err ?? new Error('Unable to open ZIP archive'));
+      let settled = false;
+      zipfile.on('entry', (entry) => {
+        if (entry.fileName !== fileName) {
+          zipfile.readEntry();
+          return;
+        }
+        zipfile.openReadStream(entry, (streamError, stream) => {
+          if (streamError || !stream) return reject(streamError ?? new Error(`Unable to read ZIP entry: ${fileName}`));
+          const chunks: Buffer[] = [];
+          stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+          stream.on('error', reject);
+          stream.on('end', () => {
+            if (settled) return;
+            settled = true;
+            resolve(Buffer.concat(chunks));
+            zipfile.close();
+          });
+        });
+      });
+      zipfile.on('end', () => {
+        if (!settled) reject(new Error(`File not found in ZIP: ${fileName}`));
+      });
+      zipfile.on('error', reject);
+      zipfile.readEntry();
+    });
+  });
+}
 /**
  * Extract a specific file from a ZIP archive.
  */

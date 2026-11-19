@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { requireOwnedEngagement, ownershipErrorStatus } from '@/lib/resource-access';
 
 /** GET /api/evidence/plan?engagement_id=<uuid>
  * Returns the evidence plan for the given engagement, joined with catalog data.
@@ -13,6 +13,8 @@ export async function GET(request: Request) {
     if (!engagementId) {
       return NextResponse.json({ error: 'engagement_id is required' }, { status: 400 });
     }
+
+    const { supabase } = await requireOwnedEngagement(engagementId);
 
     // Join audit_evidence_plan with audit_evidence_catalog to get required fields
     const { data, error } = await supabase
@@ -43,7 +45,9 @@ export async function GET(request: Request) {
 
     return NextResponse.json(result);
   } catch (e: any) {
-    console.error('Unexpected error loading evidence plan:', e);
+    const authStatus = ownershipErrorStatus(e);
+    if (authStatus) return NextResponse.json({ error: authStatus === 401 ? 'Authentication required' : authStatus === 403 ? 'Forbidden' : 'Ownership check failed' }, { status: authStatus });
+    console.error('Unexpected error loading evidence plan');
     return NextResponse.json({ error: 'Failed to load evidence plan' }, { status: 500 });
   }
 }

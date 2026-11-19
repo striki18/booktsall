@@ -12,7 +12,9 @@ export function escapeCsvValue(value: any): string {
   if (value === null || value === undefined) {
     return '';
   }
-  const str = String(value);
+  const raw = String(value);
+  // Prevent spreadsheet applications from evaluating untrusted cell values as formulas.
+  const str = /^[\u0000-\u0020]*[=+\-@]/.test(raw) ? "'" + raw : raw;
   // Check if escaping is needed
   if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
     // Escape double quotes by doubling them
@@ -55,6 +57,13 @@ export function generateEvidenceRegisterCsv(registerEntries: any[]): string {
     { key: 'fileName', header: 'Attachment Filename' },
     { key: 'attachableId', header: 'Attachable ID' },
     { key: 'status', header: 'Status' },
+    { key: 'humanApproved', header: 'Human Approved' },
+    { key: 'reviewAction', header: 'Latest Review Decision' },
+    { key: 'selectedQboTxnId', header: 'Reviewed Transaction ID' },
+    { key: 'reviewerUserId', header: 'Reviewer User ID' },
+    { key: 'reviewedAt', header: 'Decision Timestamp' },
+    { key: 'reviewRationale', header: 'Decision Rationale' },
+    { key: 'reviewHistory', header: 'Decision History' },
   ];
   
   // Map register entries to CSV row format using registerState as the status
@@ -67,6 +76,13 @@ export function generateEvidenceRegisterCsv(registerEntries: any[]): string {
     fileName: entry.attachmentFilename ?? entry.fileName ?? '',
     attachableId: entry.attachableId ?? '',
     status: entry.registerState ?? '',
+    humanApproved: entry.humanApproved === true ? 'YES' : entry.humanApproved === false ? 'NO' : '',
+    reviewAction: entry.reviewDecision?.action ?? '',
+    selectedQboTxnId: entry.reviewDecision?.selected_qbo_txn_id ?? '',
+    reviewerUserId: entry.reviewDecision?.reviewer_user_id ?? '',
+    reviewedAt: entry.reviewDecision?.created_at ?? '',
+    reviewRationale: entry.reviewDecision?.rationale ?? '',
+    reviewHistory: entry.reviewHistory?.length ? JSON.stringify(entry.reviewHistory) : '',
   }));
   
   return generateCsv(csvRecords, columns);

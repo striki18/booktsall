@@ -45,7 +45,7 @@ export function UploadDropzone({
             Drag and drop files here
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[#5d6675]">
-            Upload PDFs, Excel workbooks, CSV files, Word documents, and images.
+            Upload PDF files and images (PNG, JPEG, or WebP).
             Multiple files are supported.
           </p>
         </div>

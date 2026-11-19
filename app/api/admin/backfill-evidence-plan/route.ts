@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { requireAuthContext } from '@/lib/auth';
 
 /**
  * POST /api/admin/backfill-evidence-plan
@@ -11,10 +11,12 @@ import { supabase } from '@/lib/supabase';
  */
 export async function POST() {
   try {
+    const { realmId, supabase } = await requireAuthContext();
     // 1️⃣ Load all engagements
     const { data: engagementsRaw, error: engErr } = await supabase
       .from('audit_engagements')
       .select('id')
+      .eq('realm_id', realmId)
       .order('created_at', { ascending: true });
     if (engErr) throw engErr;
 
@@ -76,7 +78,7 @@ export async function POST() {
     };
     return NextResponse.json(result);
   } catch (e: any) {
-    console.error('Backfill evidence plan error:', e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    const status = e instanceof Error && e.message === 'UNAUTHORIZED' ? 401 : e instanceof Error && (e.message === 'NO_REALM_ID' || e.message === 'FORBIDDEN') ? 403 : 500;
+    return NextResponse.json({ error: status === 500 ? 'Backfill failed' : status === 401 ? 'Authentication required' : 'Forbidden' }, { status });
   }
 }

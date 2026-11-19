@@ -1,237 +1,148 @@
 "use client";
 
-import Link from "next/link";
-import {
-  ChangeEvent,
-  DragEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { ChangeEvent, DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { WorkspaceHeader, useWordingMode } from "@/app/quickbooks/icons";
 import { DocumentTable } from "./components/document-table";
 import { DocumentToolbar } from "./components/document-toolbar";
 import { EmptyDocuments } from "./components/empty-documents";
 import { UploadDropzone } from "./components/upload-dropzone";
-import { dataUrlToBlob } from "./document-utils";
-import {
-  FileTypeFilter,
-  getFileCategory,
-  isAcceptedFile,
-  StoredDocument,
-} from "./types";
+import { FileTypeFilter, getFileCategory, isAcceptedFile, StoredDocument } from "./types";
 
-const storageKey = "auditready:documents";
+type InboxDocumentResponse = {
+  id: string;
+  filename: string;
+  content_type: string;
+  file_size: number;
+  uploaded_at: string;
+  processing_status?: StoredDocument["status"];
+  processing_error?: string | null;
+};
+
+function mapDocument(document: InboxDocumentResponse): StoredDocument {
+  return {
+    id: document.id,
+    name: document.filename,
+    type: document.content_type,
+    size: Number(document.file_size),
+    uploadedAt: document.uploaded_at,
+    status: document.processing_status ?? "pending",
+    processingError: document.processing_error ?? null,
+  };
+}
 
 export default function DocumentsPage() {
+  const { wording } = useWordingMode();
+  const financeMode = wording === "finance";
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [documents, setDocuments] =
-    useState<StoredDocument[]>(readStoredDocuments);
+  const [documents, setDocuments] = useState<StoredDocument[]>([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FileTypeFilter>("All");
   const [isDragging, setIsDragging] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
   const [message, setMessage] = useState("");
 
-  useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify(documents));
-  }, [documents]);
+  const loadDocuments = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch("/api/firm/inbox", { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Unable to load documents");
+      setDocuments((body.documents ?? []).map(mapDocument));
+      setMessage("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to load documents");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadDocuments(); }, [loadDocuments]);
 
   const visibleDocuments = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
-
-    return documents.filter((document) => {
-      const matchesSearch = document.name
-        .toLowerCase()
-        .includes(normalizedSearch);
-      const matchesFilter =
-        filter === "All" || getFileCategory(document) === filter;
-
-      return matchesSearch && matchesFilter;
-    });
+    return documents.filter((document) =>
+      document.name.toLowerCase().includes(normalizedSearch) &&
+      (filter === "All" || getFileCategory(document) === filter),
+    );
   }, [documents, filter, search]);
 
-  function browseFiles() {
-    inputRef.current?.click();
-  }
+  function browseFiles() { inputRef.current?.click(); }
 
   async function uploadFiles(fileList: FileList | File[]) {
     const files = Array.from(fileList);
     const acceptedFiles = files.filter(isAcceptedFile);
     const rejectedCount = files.length - acceptedFiles.length;
-
     if (acceptedFiles.length === 0) {
-      setMessage(
-        rejectedCount > 0
-          ? "Those file types are not supported."
-          : "Choose at least one document to upload.",
-      );
+      setMessage(rejectedCount > 0 ? "Choose PDF or image files to upload." : "Choose at least one document to upload.");
       return;
     }
 
+    const formData = new FormData();
+    acceptedFiles.forEach((file) => formData.append("files", file));
+    setIsUploading(true);
+    setMessage("");
     try {
-      const uploadedDocuments = await Promise.all(
-        acceptedFiles.map(async (file) => ({
-          id: crypto.randomUUID(),
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          uploadedAt: new Date().toISOString(),
-          status: "Uploaded" as const,
-          dataUrl: await readFileAsDataUrl(file),
-        })),
-      );
-
-      setDocuments((currentDocuments) => [
-        ...uploadedDocuments,
-        ...currentDocuments,
-      ]);
-      setMessage(
-        rejectedCount > 0
-          ? `${acceptedFiles.length} uploaded. ${rejectedCount} unsupported file skipped.`
-          : `${acceptedFiles.length} document${
-              acceptedFiles.length === 1 ? "" : "s"
-            } uploaded.`,
-      );
-    } catch {
-      setMessage("Upload failed. Try a smaller file or upload fewer files.");
+      const response = await fetch("/api/firm/inbox/documents", { method: "POST", body: formData });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Upload failed");
+      await loadDocuments();
+      const uploaded = body.documents?.length ?? 0;
+      setMessage(`${uploaded} document${uploaded === 1 ? "" : "s"} uploaded${rejectedCount ? `; ${rejectedCount} unsupported file${rejectedCount === 1 ? "" : "s"} skipped` : ""}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Upload failed. Try again.");
+      await loadDocuments();
+    } finally {
+      setIsUploading(false);
     }
   }
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    if (event.target.files) {
-      void uploadFiles(event.target.files);
-      event.target.value = "";
+    if (event.target.files) void uploadFiles(event.target.files);
+    event.target.value = "";
+  }
+  function handleDragOver(event: DragEvent<HTMLDivElement>) { event.preventDefault(); setIsDragging(true); }
+  function handleDragLeave() { setIsDragging(false); }
+  function handleDrop(event: DragEvent<HTMLDivElement>) { event.preventDefault(); setIsDragging(false); void uploadFiles(event.dataTransfer.files); }
+
+  function viewDocument(document: StoredDocument) {
+    window.open(`/api/firm/inbox/documents/${encodeURIComponent(document.id)}`, "_blank", "noopener,noreferrer");
+  }
+
+  async function deleteDocument(id: string) {
+    try {
+      const response = await fetch(`/api/firm/inbox/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Unable to delete document");
+      setDocuments((current) => current.filter((document) => document.id !== id));
+      setMessage("Document deleted.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to delete document");
     }
   }
 
-  function handleDragOver(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setIsDragging(true);
-  }
-
-  function handleDragLeave() {
-    setIsDragging(false);
-  }
-
-  function handleDrop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    setIsDragging(false);
-    void uploadFiles(event.dataTransfer.files);
-  }
-
-  function viewDocument(document: StoredDocument) {
-    const blob = dataUrlToBlob(document);
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
-
-  function deleteDocument(id: string) {
-    setDocuments((currentDocuments) =>
-      currentDocuments.filter((document) => document.id !== id),
-    );
-    setMessage("Document deleted.");
-  }
-
   return (
-    <main className="min-h-screen bg-[#f6f7f9] px-6 py-8 text-[#172033] sm:px-10">
+    <div className="workspacePage">
+      <WorkspaceHeader />
+      <main className="workspaceContent">
       <section className="mx-auto flex w-full max-w-6xl flex-col gap-6">
         <header className="flex flex-col justify-between gap-5 border-b border-[#d9dde5] pb-6 sm:flex-row sm:items-end">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#55706d]">
-              AuditReady
-            </p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-normal text-[#172033] sm:text-4xl">
-              Documents
-            </h1>
-            <p className="mt-3 max-w-2xl text-base leading-7 text-[#5d6675]">
-              Collect and manage the files that support your audit-ready
-              package.
-            </p>
+            <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#55706d]">Zevidt inbox</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-normal text-[#172033] sm:text-4xl">{financeMode ? "Documents" : "Bring everything together."}</h1>
+            <p className="mt-3 max-w-2xl text-base leading-7 text-[#5d6675]">{financeMode ? "Collect and manage the receipts and supporting evidence for your transactions." : "Drop in documents from email, messages, or folders. We’ll organize them for review."}</p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
-            <Link
-              href="/"
-              className="flex h-11 items-center justify-center rounded-md border border-[#c8ced8] px-4 text-sm font-semibold text-[#172033] transition hover:border-[#8f9aaa] hover:bg-white"
-            >
-              Back to dashboard
-            </Link>
-            <button
-              type="button"
-              onClick={browseFiles}
-              className="h-11 rounded-md bg-[#243b53] px-5 text-sm font-semibold text-white shadow-[0_8px_20px_rgba(36,59,83,0.16)] transition hover:bg-[#1b2f44]"
-            >
-              Upload
-            </button>
+            <button type="button" onClick={browseFiles} disabled={isUploading} className="h-11 rounded-md bg-[#243b53] px-5 text-sm font-semibold text-white shadow-[0_8px_20px_rgba(36,59,83,0.16)] transition hover:bg-[#1b2f44] disabled:opacity-60">{isUploading ? "Uploading…" : "Upload"}</button>
           </div>
         </header>
 
-        <UploadDropzone
-          inputRef={inputRef}
-          isDragging={isDragging}
-          onBrowse={browseFiles}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onFileChange={handleFileChange}
-        />
-
-        {message ? (
-          <div className="rounded-md border border-[#d7e2df] bg-[#eef4f2] px-4 py-3 text-sm font-medium text-[#345d57]">
-            {message}
-          </div>
-        ) : null}
-
-        <DocumentToolbar
-          search={search}
-          filter={filter}
-          totalCount={documents.length}
-          visibleCount={visibleDocuments.length}
-          onSearchChange={setSearch}
-          onFilterChange={setFilter}
-        />
-
-        {visibleDocuments.length > 0 ? (
-          <DocumentTable
-            documents={visibleDocuments}
-            onView={viewDocument}
-            onDelete={deleteDocument}
-          />
-        ) : (
-          <EmptyDocuments
-            hasDocuments={documents.length > 0}
-            onUpload={browseFiles}
-          />
-        )}
+        <UploadDropzone inputRef={inputRef} isDragging={isDragging} onBrowse={browseFiles} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onFileChange={handleFileChange} />
+        {message ? <div role="status" className="rounded-md border border-[#d7e2df] bg-[#eef4f2] px-4 py-3 text-sm font-medium text-[#345d57]">{message}</div> : null}
+        <DocumentToolbar search={search} filter={filter} totalCount={documents.length} visibleCount={visibleDocuments.length} onSearchChange={setSearch} onFilterChange={setFilter} />
+        {isLoading ? <p className="rounded-md border border-[#d9dde5] bg-white p-6 text-sm text-[#5d6675]">Loading documents…</p> : visibleDocuments.length > 0 ? <DocumentTable documents={visibleDocuments} onView={viewDocument} onDelete={(id) => { void deleteDocument(id); }} /> : <EmptyDocuments hasDocuments={documents.length > 0} onUpload={browseFiles} />}
       </section>
-    </main>
+      </main>
+    </div>
   );
-}
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
-function readStoredDocuments() {
-  if (typeof window === "undefined") {
-    return [];
-  }
-
-  const storedDocuments = window.localStorage.getItem(storageKey);
-
-  if (!storedDocuments) {
-    return [];
-  }
-
-  try {
-    return JSON.parse(storedDocuments) as StoredDocument[];
-  } catch {
-    window.localStorage.removeItem(storageKey);
-    return [];
-  }
 }

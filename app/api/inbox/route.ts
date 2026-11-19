@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -8,9 +9,13 @@ const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
 export async function POST(request: NextRequest) {
   try {
+    const { realmId } = await requireAuth();
     const body: { realm_id: string; transaction_ids: string[] } = await request.json();
     const { realm_id, transaction_ids } = body;
 
+    if (realm_id !== realmId) {
+      return NextResponse.json({ error: 'realm_id is not authorized for this account' }, { status: 403 });
+    }
     if (!realm_id || !transaction_ids || !Array.isArray(transaction_ids) || transaction_ids.length === 0) {
       return NextResponse.json(
         { error: 'realm_id and transaction_ids array are required' },
@@ -87,11 +92,15 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
+    const { realmId } = await requireAuth();
     const { searchParams } = new URL(request.url);
     const realm_id = searchParams.get('realm_id');
 
     if (!realm_id) {
       return NextResponse.json({ error: 'realm_id is required' }, { status: 400 });
+    }
+    if (realm_id !== realmId) {
+      return NextResponse.json({ error: 'realm_id is not authorized for this account' }, { status: 403 });
     }
 
     const { data: inbox, error } = await supabaseAdmin

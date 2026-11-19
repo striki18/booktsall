@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '@/lib/supabase';
 import { buildQboTransactionUrl } from '@/lib/qbo-links';
+import { CompanySwitcher } from './company-switcher';
+import { WorkspaceHeader, useWordingMode } from './icons';
 import styles from './page.module.css';
 
 interface CompanyInfo {
@@ -56,6 +57,8 @@ interface PipelineError {
 
 interface GenerateResponse {
   success: boolean;
+  packageId?: string;
+  completionStatus?: 'complete' | 'partial';
   packagePath?: string;
   packageName?: string;
   stats?: PipelineStats;
@@ -85,6 +88,24 @@ interface RegisterEntry {
   amount?: string | number;
 }
 
+interface WorkspaceTransaction {
+  txnId: string | null;
+  txnType: string | null;
+  date: string | null;
+  vendor: string | null;
+  amount: number | null;
+  docNumber: string | null;
+}
+
+interface WorkspaceAttachable {
+  attachableId: string | null;
+  fileName: string | null;
+  fileSize: number | string | null;
+  entityType: string | null;
+  entityId: string | null;
+  orphaned: boolean;
+}
+
 type NavSection = 'overview' | 'generate' | 'evidence' | 'missing' | 'attachments';
 
 const PIPELINE_STAGES = [
@@ -104,6 +125,17 @@ const NAV_ITEMS: { id: NavSection; label: string; icon: React.ReactNode }[] = [
   { id: 'missing', label: 'Missing Documents', icon: <MissingIcon /> },
   { id: 'attachments', label: 'Attachments', icon: <AttachmentsIcon /> },
 ];
+
+function getSectionLabel(section: NavSection, financeMode: boolean) {
+  const labels: Record<NavSection, { general: string; finance: string }> = {
+    overview: { general: 'Home', finance: 'Overview' },
+    generate: { general: 'Create report', finance: 'Generate package' },
+    evidence: { general: 'Documents & transactions', finance: 'Evidence register' },
+    missing: { general: 'Needs documents', finance: 'Missing documents' },
+    attachments: { general: 'Files', finance: 'Attachments' },
+  };
+  return labels[section][financeMode ? 'finance' : 'general'];
+}
 
 // SVG Icons - accept and forward props for className, style, etc.
 interface IconProps {
@@ -195,16 +227,6 @@ function SettingsIcon({ className, style, 'aria-hidden': ariaHidden, 'aria-label
   );
 }
 
-function MenuIcon({ className, style, 'aria-hidden': ariaHidden, 'aria-label': ariaLabel, ...props }: IconProps) {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style} aria-hidden={ariaHidden} aria-label={ariaLabel} {...props}>
-      <line x1="3" y1="12" x2="21" y2="12" />
-      <line x1="3" y1="6" x2="21" y2="6" />
-      <line x1="3" y1="18" x2="21" y2="18" />
-    </svg>
-  );
-}
-
 function CloseIcon({ className, style, 'aria-hidden': ariaHidden, 'aria-label': ariaLabel, ...props }: IconProps) {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style} aria-hidden={ariaHidden} aria-label={ariaLabel} {...props}>
@@ -253,20 +275,29 @@ function AlertIcon({ className, style, 'aria-hidden': ariaHidden, 'aria-label': 
 }
 
 export default function QuickbooksPage() {
-  // Sidebar state
   const [activeSection, setActiveSection] = useState<NavSection>('overview');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const { wording } = useWordingMode();
+  const financeMode = wording === 'finance';
 
   // Connection state
   const [company, setCompany] = useState<CompanyInfo | null>(null);
   const [realmId, setRealmId] = useState<string>('');
   const [tokenInfo, setTokenInfo] = useState<TokenInfo | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'checking' | 'connected' | 'not_connected' | 'error'>('checking');
+  const [authStatus, setAuthStatus] = useState<'checking' | 'signed_in' | 'signed_out' | 'error'>('checking');
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
   // Form state
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [workspaceTransactions, setWorkspaceTransactions] = useState<WorkspaceTransaction[]>([]);
+  const [workspaceAttachables, setWorkspaceAttachables] = useState<WorkspaceAttachable[]>([]);
+  const [workspaceTransactionError, setWorkspaceTransactionError] = useState<string | null>(null);
+  const [workspaceAttachableError, setWorkspaceAttachableError] = useState<string | null>(null);
+  const [workspaceActivityLoading, setWorkspaceActivityLoading] = useState(false);
+  const [workspaceActivityLoaded, setWorkspaceActivityLoaded] = useState(false);
+  const [workspaceActivityKey, setWorkspaceActivityKey] = useState('');
+  const [workspaceActivityUpdatedAt, setWorkspaceActivityUpdatedAt] = useState<string | null>(null);
 
   // Generation state
   const [generating, setGenerating] = useState(false);
@@ -289,6 +320,13 @@ export default function QuickbooksPage() {
   // Settings modal
   const [showSettings, setShowSettings] = useState(false);
 
+  useEffect(() => {
+    const section = new URLSearchParams(window.location.search).get('section');
+    if (section && NAV_ITEMS.some((item) => item.id === section)) {
+      setActiveSection(section as NavSection);
+    }
+  }, []);
+
   // Fetch connection status and company info
   const fetchConnectionStatus = useCallback(async () => {
     try {
@@ -305,7 +343,13 @@ export default function QuickbooksPage() {
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : 'Unknown error';
       setConnectionStatus('not_connected');
-      setConnectionError(message);
+      setConnectionError(
+        message === 'UNAUTHORIZED' || message === 'Authentication required'
+          ? 'Sign in to Zevidt before connecting QuickBooks.'
+          : message === 'NO_REALM_ID'
+            ? 'Connect your QuickBooks sandbox to begin.'
+            : message,
+      );
       setCompany(null);
     }
   }, []);
@@ -313,35 +357,107 @@ export default function QuickbooksPage() {
   // Fetch token info
   const fetchTokenInfo = useCallback(async () => {
     try {
-      const { data, error } = await supabase
-        .from('quickbooks_tokens')
-        .select('realm_id, expires_at')
-        .order('expires_at', { ascending: true })
-        .limit(1)
-        .single();
-      if (!error && data) {
-        setTokenInfo(data);
-        setRealmId(data.realm_id);
+      const response = await fetch('/api/auth/intuit/token');
+      if (response.status === 401) {
+        setAuthStatus('signed_out');
+        return;
       }
-    } catch (e) {
-      // Ignore - token info is optional for UI
+      if (response.status === 403) {
+        setAuthStatus('signed_in');
+        return;
+      }
+      // The token-status route returns 404 for an authenticated user without
+      // a connected QuickBooks company. That is a valid signed-in state.
+      if (response.status === 404) {
+        setAuthStatus('signed_in');
+        setTokenInfo(null);
+        setRealmId('');
+        return;
+      }
+      if (!response.ok) {
+        setAuthStatus('error');
+        return;
+      }
+      const data = await response.json();
+      setAuthStatus('signed_in');
+      setTokenInfo(data);
+      setRealmId(data.realm_id);
+    } catch {
+      setAuthStatus('error');
     }
   }, []);
+
+  const fetchWorkspaceActivity = useCallback(async () => {
+    if (!realmId || !startDate || !endDate) return;
+    setWorkspaceActivityLoading(true);
+    setWorkspaceTransactionError(null);
+    setWorkspaceAttachableError(null);
+    setWorkspaceTransactions([]);
+    setWorkspaceAttachables([]);
+    try {
+      const response = await fetch(
+        `/api/quickbooks/transactions?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`,
+        { cache: 'no-store' },
+      );
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Could not load QuickBooks transactions.');
+      if (!Array.isArray(body)) throw new Error('QuickBooks returned an unexpected transaction response.');
+      setWorkspaceTransactions(body);
+    } catch (error) {
+      setWorkspaceTransactionError(error instanceof Error ? error.message : 'Could not load QuickBooks transactions.');
+    }
+
+    try {
+      const response = await fetch('/api/quickbooks/attachables', { cache: 'no-store' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Could not load linked QuickBooks files.');
+      if (!Array.isArray(body)) throw new Error('QuickBooks returned an unexpected file response.');
+      setWorkspaceAttachables(body);
+    } catch (error) {
+      setWorkspaceAttachableError(error instanceof Error ? error.message : 'Could not load linked QuickBooks files.');
+    } finally {
+      setWorkspaceActivityLoading(false);
+      setWorkspaceActivityLoaded(true);
+      setWorkspaceActivityUpdatedAt(new Date().toISOString());
+    }
+  }, [realmId, startDate, endDate]);
 
   // Initialize on mount
   useEffect(() => {
     const init = async () => {
-      await fetchConnectionStatus();
+      const oauthFailed = new URLSearchParams(window.location.search).get('oauth') === 'failed';
+      if (oauthFailed) {
+        setConnectionStatus('error');
+        setConnectionError('QuickBooks connection failed. Check the account and try again.');
+      } else {
+        await fetchConnectionStatus();
+      }
       await fetchTokenInfo();
-      // Set default date range for sandbox data (2023)
       if (!startDate) setStartDate('2023-01-01');
-      if (!endDate) setEndDate('2023-12-31');
+      if (!endDate) {
+        const today = new Date();
+        today.setMinutes(today.getMinutes() - today.getTimezoneOffset());
+        setEndDate(today.toISOString().slice(0, 10));
+      }
     };
     init();
   }, [fetchConnectionStatus, fetchTokenInfo]);
 
+  useEffect(() => {
+    if (connectionStatus !== 'connected' || !realmId || !startDate || !endDate) return;
+    const queryKey = `${realmId}:${startDate}:${endDate}`;
+    if (workspaceActivityKey === queryKey) return;
+    setWorkspaceActivityKey(queryKey);
+    void fetchWorkspaceActivity();
+  }, [connectionStatus, realmId, startDate, endDate, workspaceActivityKey, fetchWorkspaceActivity]);
+
   // Handle Connect QuickBooks
   const handleConnect = () => {
+    if (authStatus === 'signed_out') {
+      window.location.href = '/login';
+      return;
+    }
+    if (authStatus !== 'signed_in') return;
     window.location.href = '/api/auth/intuit';
   };
 
@@ -451,13 +567,13 @@ export default function QuickbooksPage() {
 
   // Handle Download Package
   const handleDownload = async () => {
-    if (!generationResult?.packageName || !realmId) return;
+    if (!generationResult?.packageName || !generationResult.packageId) return;
 
     setDownloading(true);
     setDownloadError(null);
 
     try {
-      const url = `/api/download?companyId=${encodeURIComponent(realmId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`;
+      const url = `/api/download?packageId=${encodeURIComponent(generationResult.packageId)}`;
       const res = await fetch(url);
 
       if (!res.ok) {
@@ -674,7 +790,115 @@ export default function QuickbooksPage() {
   };
 
   // Section renderers
+  const renderWorkspaceActivity = () => {
+    const transactions = workspaceTransactions.filter((transaction) => transaction.txnId);
+    const linkedFiles = workspaceAttachables.filter((attachable) => !attachable.orphaned && attachable.entityId);
+    const orphanedFiles = workspaceAttachables.filter((attachable) => attachable.orphaned);
+
+    return (
+      <section className={`${styles.card} ${styles.activityCard}`} aria-labelledby="workspace-activity-title">
+        <div className={styles.activityHeading}>
+          <div>
+            <h2 id="workspace-activity-title" className={styles.cardTitle}>{financeMode ? 'Transactions and evidence' : 'QuickBooks activity'}</h2>
+            <p className={styles.activityDescription}>
+              {financeMode
+                ? 'Transactions and their linked QuickBooks files for the selected dates.'
+                : 'See the transactions and files already linked in QuickBooks.'}
+            </p>
+          </div>
+          {workspaceActivityUpdatedAt ? <span className={styles.activityUpdated}>Updated {new Date(workspaceActivityUpdatedAt).toLocaleTimeString()}</span> : null}
+        </div>
+
+        <form
+          className={styles.activityFilters}
+          onSubmit={(event) => { event.preventDefault(); void fetchWorkspaceActivity(); }}
+        >
+          <label className={styles.activityDateField}>
+            <span>{financeMode ? 'Start date' : 'From'}</span>
+            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
+          </label>
+          <label className={styles.activityDateField}>
+            <span>{financeMode ? 'End date' : 'To'}</span>
+            <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
+          </label>
+          <button
+            type="submit"
+            className={styles.btn + ' ' + styles.btnPrimary}
+            disabled={connectionStatus !== 'connected' || workspaceActivityLoading || !realmId}
+          >
+            {workspaceActivityLoading ? 'Loading…' : 'Refresh activity'}
+          </button>
+        </form>
+
+        {connectionStatus !== 'connected' ? (
+          <p className={styles.activityEmpty}>{authStatus === 'signed_out' ? 'Sign in to Zevidt, then connect QuickBooks to load this company’s activity.' : 'Connect QuickBooks to see this company’s transactions and linked files.'}</p>
+        ) : null}
+        {workspaceTransactionError ? <p className={styles.activityError} role="alert">{workspaceTransactionError}</p> : null}
+        {workspaceAttachableError ? <p className={styles.activityWarning} role="status">Transaction results are available, but linked-file details could not be loaded: {workspaceAttachableError}</p> : null}
+
+        {connectionStatus === 'connected' && !workspaceTransactionError && workspaceActivityLoaded && transactions.length === 0 ? (
+          <p className={styles.activityEmpty}>No transactions were returned for these dates. Try a wider date range.</p>
+        ) : null}
+
+        {transactions.length > 0 ? (
+          <>
+            <p className={styles.activitySummary}>
+              {transactions.length} transactions
+              {!workspaceAttachableError ? ` · ${linkedFiles.length} transaction-linked file records · ${orphanedFiles.length} unattached file records` : ''}
+            </p>
+            <div className={styles.activityTableWrap}>
+              <table className={styles.activityTable}>
+                <thead>
+                  <tr>
+                    <th scope="col">Date</th>
+                    <th scope="col">Type</th>
+                    <th scope="col">Number</th>
+                    <th scope="col">Name</th>
+                    <th scope="col">Amount</th>
+                    <th scope="col">QuickBooks files</th>
+                    <th scope="col"><span className="sr-only">QuickBooks link</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {transactions.map((transaction) => {
+                    const qboUrl = buildQboTransactionUrl(transaction.txnType, transaction.txnId);
+                    const files = [...new Map(
+                      workspaceAttachables
+                        .filter((attachable) => !attachable.orphaned && attachable.entityId === transaction.txnId && attachable.attachableId)
+                        .map((attachable) => [attachable.attachableId, attachable]),
+                    ).values()];
+                    return (
+                      <tr key={transaction.txnId}>
+                        <td>{transaction.date || '—'}</td>
+                        <td>{transaction.txnType || '—'}</td>
+                        <td>{transaction.docNumber || '—'}</td>
+                        <td>{transaction.vendor || '—'}</td>
+                        <td>{transaction.amount == null ? '—' : `${company?.CompanyInfo?.Currency ? `${company.CompanyInfo.Currency} ` : ''}${transaction.amount.toLocaleString()}`}</td>
+                        <td>
+                          {files.length === 0 ? (
+                            <span className={styles.noLinkedFile}>No linked file</span>
+                          ) : (
+                            <details className={styles.activityFileDetails}>
+                              <summary>{files.length} {files.length === 1 ? 'file' : 'files'}</summary>
+                              <ul>{files.map((file) => <li key={file.attachableId}>{file.fileName || `QuickBooks file ${file.attachableId}`}</li>)}</ul>
+                            </details>
+                          )}
+                        </td>
+                        <td>{qboUrl ? <a className={styles.activityQboLink} href={qboUrl} target="_blank" rel="noopener noreferrer">Open in QBO ↗</a> : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
+      </section>
+    );
+  };
+
   const renderOverview = () => (
+    <>
     <div className={styles.card}>
       <div style={{ marginBottom: 'var(--space-8)' }}>
         <h1 style={{ 
@@ -685,7 +909,7 @@ export default function QuickbooksPage() {
           lineHeight: 'var(--leading-tight)',
           marginBottom: 'var(--space-4)'
         }}>
-          Your audit evidence, organized.
+          {financeMode ? 'Know which transactions still need evidence.' : 'Know what’s missing. Get it handled.'}
         </h1>
         <p style={{ 
           fontSize: 'var(--text-xl)', 
@@ -694,7 +918,9 @@ export default function QuickbooksPage() {
           lineHeight: 'var(--leading-relaxed)',
           maxWidth: '600px'
         }}>
-          Generate a complete evidence package from QuickBooks Online. Transactions, attachments, and supporting documents — matched, validated, and ready for review.
+          {financeMode
+            ? 'Bring in supporting documents, review match suggestions, and prepare a traceable evidence package for your QuickBooks transactions.'
+            : 'Bring in the documents, see what needs a closer look, and prepare a clear record for every QuickBooks transaction.'}
         </p>
       </div>
 
@@ -704,9 +930,11 @@ export default function QuickbooksPage() {
           <div className={styles.connectionStatusMain}>
             {renderConnectionBadge()}
             <span className={styles.statusText}>
-              {connectionStatus === 'connected' 
-                ? 'Active connection to QuickBooks Online' 
-                : 'No active connection'}
+              {connectionStatus === 'connected'
+                ? 'Active connection to QuickBooks Online'
+                : authStatus === 'signed_out'
+                  ? 'Sign in to Zevidt before connecting QuickBooks'
+                  : 'No active connection'}
             </span>
           </div>
         </div>
@@ -781,9 +1009,9 @@ export default function QuickbooksPage() {
           <button 
             className={styles.btn + ' ' + styles.btnPrimary + ' ' + styles.btnLg} 
             onClick={handleConnect} 
-            disabled={connectionStatus === 'checking'}
+            disabled={connectionStatus === 'checking' || authStatus === 'checking' || authStatus === 'error'}
           >
-            Connect QuickBooks
+            {authStatus === 'checking' ? 'Checking sign-in…' : authStatus === 'signed_out' ? 'Sign in to Zevidt' : authStatus === 'error' ? 'Sign-in unavailable' : 'Connect QuickBooks'}
           </button>
         ) : (
           <>
@@ -809,14 +1037,17 @@ export default function QuickbooksPage() {
         )}
       </div>
     </div>
+    {renderWorkspaceActivity()}
+    </>
   );
 
   const renderGenerate = () => (
     <div className={styles.card}>
-      <h2 className={styles.cardTitle}>Generate Evidence Package</h2>
+      <h2 className={styles.cardTitle}>{financeMode ? 'Generate evidence package' : 'Create a clear finance report'}</h2>
       <p className={styles.notice} style={{ marginBottom: 'var(--space-6)' }}>
-        AuditReady retrieves transactions and supporting documents for the selected period, 
-        matches evidence, downloads attachments, and builds a complete audit-ready package.
+        {financeMode
+          ? 'Choose a date range. Zevidt retrieves transactions and supporting documents, matches evidence, and prepares a traceable package.'
+          : 'Choose a date range. We’ll gather the transactions and files, organize what we find, and show what still needs attention.'}
       </p>
 
       <form className={styles.generationForm} onSubmit={(e) => { e.preventDefault(); handleGeneratePackage(); }}>
@@ -851,7 +1082,7 @@ export default function QuickbooksPage() {
             className={styles.btn + ' ' + styles.btnPrimary + ' ' + styles.btnLg}
             disabled={generating || !realmId}
           >
-            {generating ? 'Generating...' : 'Generate Package'}
+            {generating ? (financeMode ? 'Generating…' : 'Putting it together…') : (financeMode ? 'Generate package' : 'Create report')}
           </button>
           {generationError && (
             <span className={styles.errorInline}>
@@ -1046,7 +1277,7 @@ export default function QuickbooksPage() {
 
   const renderEvidence = () => (
     <div className={styles.card}>
-      <h2 className={styles.cardTitle}>Evidence Register</h2>
+      <h2 className={styles.cardTitle}>{financeMode ? 'Evidence register' : 'Documents & transactions'}</h2>
 
       {generationResult?.success ? (
         <div className={styles.notice}>
@@ -1102,7 +1333,7 @@ export default function QuickbooksPage() {
 
     return (
       <div className={styles.card}>
-        <h2 className={styles.cardTitle}>Missing Documents</h2>
+        <h2 className={styles.cardTitle}>{financeMode ? 'Missing documents' : 'What’s still missing'}</h2>
 
         {generationResult?.success && generationResult.stats && generationResult.stats.missingCount > 0 ? (
           <>
@@ -1256,7 +1487,7 @@ export default function QuickbooksPage() {
 
   const renderAttachments = () => (
     <div className={styles.card}>
-      <h2 className={styles.cardTitle}>Attachments</h2>
+      <h2 className={styles.cardTitle}>{financeMode ? 'Attachments' : 'Files in your package'}</h2>
 
       {generationResult?.success && generationResult.stats ? (
         <>
@@ -1384,76 +1615,34 @@ export default function QuickbooksPage() {
 
   return (
     <div className={styles.container}>
-      {/* Sidebar Overlay for mobile */}
-      <div 
-        className={`${styles.sidebarOverlay} ${sidebarOpen ? styles.visible : ''}`}
-        onClick={() => setSidebarOpen(false)}
-        aria-hidden="true"
+      <WorkspaceHeader
+        activeSection={activeSection}
+        onSelectSection={(section) => setActiveSection(section)}
       />
-
-      {/* Sidebar */}
-      <aside className={`${styles.sidebar} ${sidebarOpen ? styles.open : ''}`} role="navigation" aria-label="Main navigation">
-        <div className={styles.sidebarHeader}>
-          <div className={styles.logo}>
-            <span className={styles.logoMark}>AR</span>
-            <span>AuditReady</span>
-          </div>
-        </div>
-
-        <nav className={styles.nav} aria-label="Main">
+      <main className={styles.main} role="main">
+        <nav className={styles.sectionTabs} aria-label="Workspace views">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
-              className={`${styles.navItem} ${activeSection === item.id ? styles.active : ''}`}
-              onClick={() => {
-                setActiveSection(item.id);
-                setSidebarOpen(false);
-              }}
+              type="button"
+              className={`${styles.sectionTab} ${activeSection === item.id ? styles.sectionTabActive : ''}`}
+              onClick={() => setActiveSection(item.id)}
               aria-current={activeSection === item.id ? 'page' : undefined}
             >
               <span className={styles.navIcon}>{item.icon}</span>
-              <span>{item.label}</span>
+              <span>{getSectionLabel(item.id, financeMode)}</span>
             </button>
           ))}
         </nav>
-
-        <div className={styles.navDivider} />
-
-        <div className={styles.sidebarFooter}>
-          <button
-            className={`${styles.navItem} ${styles.navItemSettings}`}
-            onClick={() => {
-              setShowSettings(true);
-              setSidebarOpen(false);
-            }}
-          >
-            <SettingsIcon />
-            <span>Settings</span>
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className={`${styles.main} ${styles.withSidebarOffset}`} role="main">
-        {/* Mobile menu button */}
-        <button
-          className={styles.mobileMenuButton}
-          onClick={() => setSidebarOpen(true)}
-          aria-label="Open navigation menu"
-          aria-expanded={sidebarOpen}
-        >
-          <MenuIcon />
-        </button>
-
-        {/* Top Header */}
         <header className={styles.header}>
           <div className={styles.headerLeft}>
             <h1 className={styles.pageTitle}>
-              {NAV_ITEMS.find(i => i.id === activeSection)?.label || 'AuditReady'}
+              {getSectionLabel(activeSection, financeMode)}
             </h1>
-            <span className={styles.pageSubtitle}>QuickBooks Evidence Package</span>
+            <span className={styles.pageSubtitle}>{financeMode ? 'A clear view of evidence, missing documents, and review items.' : 'A clear view of what’s ready and what needs attention.'}</span>
           </div>
           <div className={styles.headerRight}>
+            <CompanySwitcher />
             <div className={styles.connectionIndicator}>
               {renderHeaderConnectionBadge()}
               <span className={styles.companyName}>

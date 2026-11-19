@@ -41,14 +41,14 @@ export function splitEvidenceRegister(register: any[]): {
   missingEntries: any[]
 } {
   // MATCHED, REVIEW_REQUIRED, WRONG_MATCHED go to evidence_register.csv
-  const allEntries = register.filter(entry => 
+  const allEntries = register.filter(entry => (
     entry.registerState === 'MATCHED' ||
     entry.registerState === 'REVIEW_REQUIRED' ||
     entry.registerState === 'WRONG_MATCHED'
-  );
+  ) && (entry.qboTxnId || (entry.reviewCandidateTxnIds || []).length > 0));
 
   // Only MISSING state entries go to missing_documents.csv
-  const missingEntries = register.filter(entry => entry.registerState === 'MISSING');
+  const missingEntries = register.filter(entry => entry.registerState === 'MISSING' && entry.qboTxnId);
 
   return { allEntries, missingEntries };
 }

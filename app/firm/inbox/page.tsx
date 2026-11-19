@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { WorkspaceHeader, useWordingMode } from '@/app/quickbooks/icons';
 import styles from './page.module.css';
 
 interface CollectionRequest {
@@ -31,60 +31,57 @@ interface CompanyInbox {
 }
 
 export default function FirmInboxPage() {
+  const { wording } = useWordingMode();
+  const financeMode = wording === 'finance';
   const [requests, setRequests] = useState<CollectionRequest[]>([]);
   const [inboxes, setInboxes] = useState<CompanyInbox[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
+  const [rotatingInbox, setRotatingInbox] = useState(false);
 
   const fetchData = async () => {
     try {
       setLoading(true);
       setError(null);
-
-      // Fetch all inboxes
-      const { data: inboxData, error: inboxError } = await supabase
-        .from('company_inboxes')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (inboxError) throw inboxError;
-      setInboxes(inboxData || []);
-
-      // Fetch all collection requests
-      const { data: requestData, error: requestError } = await supabase
-        .from('collection_requests')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (requestError) throw requestError;
-      
-      // Fetch documents for each request
-      const requestsWithDocs = await Promise.all((requestData || []).map(async (req) => {
-        const { data: docs } = await supabase
-          .from('inbox_documents')
-          .select('*')
-          .eq('realm_id', req.realm_id)
-          .order('uploaded_at', { ascending: false });
-        
-        return {
-          ...req,
-          inbox_documents: docs || []
-        };
-      }));
-
-      setRequests(requestsWithDocs);
+      const response = await fetch('/api/firm/inbox');
+      if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result.error || 'Failed to load company inbox');
+      }
+      const result = await response.json();
+      const inboxData = result.inbox ? [result.inbox] : [];
+      const requestData = result.requests || [];
+      const documentData = result.documents || [];
+      setInboxes(inboxData);
+      setRequests(requestData.map((request: CollectionRequest) => ({
+        ...request,
+        inbox_documents: documentData.filter((document: InboxDocument) => document.realm_id === request.realm_id),
+      })));
     } catch (e: any) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
   };
-
   useEffect(() => {
     fetchData();
   }, []);
 
+  const handleRotateInboxToken = async () => {
+    try {
+      setRotatingInbox(true);
+      setError(null);
+      const response = await fetch('/api/firm/inbox', { method: 'PATCH' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Failed to rotate inbox link');
+      await fetchData();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setRotatingInbox(false);
+    }
+  };
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleString();
   };
@@ -119,17 +116,22 @@ export default function FirmInboxPage() {
 
   if (loading) {
     return (
-      <div className={styles.container}>
-        <div className={styles.loading}>Loading...</div>
+      <div className="workspacePage">
+        <WorkspaceHeader />
+        <main className="workspaceContent"><div className={styles.container}>
+          <div className={styles.loading}>Loading...</div>
+        </div></main>
       </div>
     );
   }
 
   return (
-    <div className={styles.container}>
+    <div className="workspacePage">
+      <WorkspaceHeader />
+      <main className="workspaceContent"><div className={styles.container}>
       <header className={styles.header}>
-        <h1>Collection Requests</h1>
-        <p className={styles.subtitle}>Manage document collection requests and view uploaded files</p>
+        <h1>{financeMode ? 'Collection requests' : 'Client requests'}</h1>
+        <p className={styles.subtitle}>{financeMode ? 'Manage evidence requests and documents received for each company.' : 'Share one simple link. Keep incoming documents and requests together.'}</p>
       </header>
 
       {error && (
@@ -168,6 +170,9 @@ export default function FirmInboxPage() {
                   <div className={styles.inboxCreated}>
                     Created: {formatDate(inbox.created_at)}
                   </div>
+                  <button className={styles.retryBtn} onClick={handleRotateInboxToken} disabled={rotatingInbox}>
+                    {rotatingInbox ? 'Rotating link...' : 'Rotate inbox link'}
+                  </button>
                 </div>
               </div>
             ))}
@@ -246,7 +251,7 @@ export default function FirmInboxPage() {
                                 <td>{formatDate(doc.uploaded_at)}</td>
                                 <td>
                                   <a 
-                                    href={`/api/inbox/${request.id}/document/${doc.id}`}
+                                    href={`/api/firm/inbox/documents/${doc.id}`}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className={styles.downloadLink}
@@ -269,6 +274,7 @@ export default function FirmInboxPage() {
           </div>
         )}
       </section>
+      </div></main>
     </div>
   );
 }

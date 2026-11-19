@@ -47,7 +47,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   
   // Reset NextResponse.json mock
-  (MockNextResponse.json as any).mockImplementation((body, init) => ({
+  (MockNextResponse.json as any).mockImplementation((body: any, init?: any) => ({
     body,
     init: init || {},
     status: init?.status || 200,

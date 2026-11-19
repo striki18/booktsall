@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { requireOwnedEngagement, ownershipErrorStatus } from '@/lib/resource-access';
 
 /**
  * GET /api/evidence/request?engagement_id=<uuid>
@@ -25,6 +25,8 @@ export async function GET(request: Request) {
     if (!uuidRegex.test(engagementId)) {
       return NextResponse.json({ error: 'Invalid engagement_id' }, { status: 400 });
     }
+
+  const { supabase } = await requireOwnedEngagement(engagementId);
 
   // Optional status filtering
   const status = searchParams.get('status');
@@ -54,8 +56,10 @@ export async function GET(request: Request) {
     // data may be null if no rows
     return NextResponse.json(data ?? []);
   } catch (e: any) {
-    console.error('Unexpected error in evidence request GET:', e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    const authStatus = ownershipErrorStatus(e);
+    if (authStatus) return NextResponse.json({ error: authStatus === 401 ? 'Authentication required' : authStatus === 403 ? 'Forbidden' : 'Ownership check failed' }, { status: authStatus });
+    console.error('Unexpected error in evidence request GET');
+    return NextResponse.json({ error: 'Failed to load evidence requests' }, { status: 500 });
   }
 }
 
@@ -112,7 +116,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    // 4. Verify engagement exists
+    // 4. Verify the authenticated user owns this engagement
+    const { supabase } = await requireOwnedEngagement(engagement_id);
+
+    // 5. Verify engagement exists
     const { data: engagementData, error: engagementError } = await supabase
       .from('audit_engagements')
       .select('id')
@@ -127,6 +134,7 @@ export async function POST(request: Request) {
       .from('audit_evidence_plan')
       .select('id')
       .eq('id', plan_id)
+      .eq('engagement_id', engagement_id)
       .single();
     if (planError || !planData) {
       return NextResponse.json({ error: 'Evidence plan not found' }, { status: 404 });
@@ -170,7 +178,9 @@ export async function POST(request: Request) {
     const result = Array.isArray(insertData) ? insertData[0] : insertData;
     return NextResponse.json(result);
   } catch (e: any) {
-    console.error('Unexpected error in evidence request POST:', e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    const authStatus = ownershipErrorStatus(e);
+    if (authStatus) return NextResponse.json({ error: authStatus === 401 ? 'Authentication required' : authStatus === 403 ? 'Forbidden' : 'Ownership check failed' }, { status: authStatus });
+    console.error('Unexpected error in evidence request POST');
+    return NextResponse.json({ error: 'Failed to create evidence request' }, { status: 500 });
   }
 }

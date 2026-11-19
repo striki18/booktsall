@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { generateZip } from '../lib/zip';
+import { generateZip, verifyZip } from '../lib/zip';
 import { getCompanyOutputDir, ensureOutputDir } from '../lib/output';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import AdmZip from 'adm-zip';
+import { createHash } from 'node:crypto';
 
 describe('generateZip', () => {
   let tempDir: string;
@@ -62,6 +63,10 @@ describe('generateZip', () => {
     expect(entries).toContain('evidence_register.csv');
     expect(entries).toContain('missing_documents.csv');
     expect(entries.some(e => e.startsWith('attachments/'))).toBe(true);
+    expect(entries).toContain('package_manifest.json');
+    expect(JSON.parse(zip.readAsText('package_manifest.json')).status).toBe('complete');
+    const verification = await verifyZip(result, testCompanyName, '2024-01-01', '2024-12-31');
+    expect(verification).toMatchObject({ validArchive: true, packageManifestPresent: true, manifestReadable: true, manifestFilesPresent: true, manifestHashesValid: true, noUnexpectedFiles: true });
   });
 
   it('should handle missing CSV files gracefully', async () => {
@@ -86,5 +91,44 @@ describe('generateZip', () => {
     expect(entries).not.toContain('evidence_register.csv');
     expect(entries).not.toContain('missing_documents.csv');
     expect(entries.some(e => e.startsWith('attachments/'))).toBe(true);
+  });
+  it('includes a per-file failure manifest for partial packages', async () => {
+    const actualOutputDir = getCompanyOutputDir(testCompanyName);
+    fs.writeFileSync(path.join(actualOutputDir, 'evidence_register.csv'), 'id,name\n1,test');
+    fs.writeFileSync(path.join(actualOutputDir, 'missing_documents.csv'), 'id,name\n2,missing');
+
+    const result = await generateZip(
+      testCompanyName,
+      '2024-01-01',
+      '2024-12-31',
+      [{ fileName: 'receipt.pdf', matchedDocumentId: 'doc-1', buffer: Buffer.from('%PDF') }],
+      [{ source: 'quickbooks', referenceId: 'attach-2', fileName: 'invoice.pdf', reason: 'download_failed' }],
+    );
+    const zip = new AdmZip(result);
+    const manifest = JSON.parse(zip.readAsText('package_manifest.json'));
+
+    expect(manifest.status).toBe('partial');
+    expect(manifest.expectedAttachmentCount).toBe(2);
+    expect(manifest.includedFiles[0]).toMatchObject({ evidenceRef: 'doc-1', path: 'attachments/receipt.pdf', size: 4, sha256: createHash('sha256').update(Buffer.from('%PDF')).digest('hex') });
+    expect(manifest.failedFiles).toEqual([{ source: 'quickbooks', referenceId: 'attach-2', fileName: 'invoice.pdf', reason: 'download_failed' }]);
+    const verification = await verifyZip(result, testCompanyName, '2024-01-01', '2024-12-31');
+    expect(verification.manifestHashesValid).toBe(true);
+    expect(verification.manifestReadable).toBe(true);
+  });
+  it('detects changed evidence bytes through manifest hash verification', async () => {
+    const actualOutputDir = getCompanyOutputDir(testCompanyName);
+    fs.writeFileSync(path.join(actualOutputDir, 'evidence_register.csv'), 'id,name\n1,test');
+    fs.writeFileSync(path.join(actualOutputDir, 'missing_documents.csv'), 'id,name\n2,missing');
+    const result = await generateZip(testCompanyName, '2024-01-01', '2024-12-31', [
+      { fileName: 'receipt.pdf', matchedDocumentId: 'doc-hash', buffer: Buffer.from('original-bytes') },
+    ]);
+    const zip = new AdmZip(result);
+    zip.updateFile('attachments/receipt.pdf', Buffer.from('changed-bytes'));
+    zip.writeZip(result);
+
+    const verification = await verifyZip(result, testCompanyName, '2024-01-01', '2024-12-31');
+
+    expect(verification.manifestHashesValid).toBe(false);
+    expect(verification.errors.some(error => error.includes('hash or size mismatch'))).toBe(true);
   });
 });

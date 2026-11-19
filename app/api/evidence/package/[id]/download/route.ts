@@ -1,5 +1,7 @@
 import { NextResponse, NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { requireAuthContext } from '@/lib/auth';
+import { requireOwnedEngagement, ownershipErrorStatus } from '@/lib/resource-access';
 
 /**
  * GET /api/evidence/package/[id]/download
@@ -15,6 +17,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
  *   6. Return JSON with packageId, downloadUrl, expiresIn.
  */
 export async function GET(request: NextRequest) {
+  let authenticatedSupabase: any; try { ({ supabase: authenticatedSupabase } = await requireAuthContext()); } catch (error) { const status = ownershipErrorStatus(error); return NextResponse.json({ error: status === 401 ? 'Authentication required' : 'Forbidden' }, { status: status ?? 500 }); }
+
   // Extract the package ID from the route parameters.
   // Next.js provides params as a Promise in the second argument, but in this
   // file we are using the dynamic route folder name, so we need to read it from
@@ -30,17 +34,23 @@ export async function GET(request: NextRequest) {
   }
 
   // 2. Verify package exists and retrieve zip_path and status.
-  const { data: pkg, error: pkgError } = await supabaseAdmin
+  const { data: pkg, error: pkgError } = await authenticatedSupabase
     .from('evidence_packages')
-    .select('id, status, zip_path')
+    .select('id, engagement_id, status, zip_path')
     .eq('id', id)
     .single();
   if (pkgError || !pkg) {
     return NextResponse.json({ error: 'Package not found' }, { status: 404 });
   }
 
+  try {
+    await requireOwnedEngagement(pkg.engagement_id);
+  } catch (error) {
+    const status = ownershipErrorStatus(error);
+    return NextResponse.json({ error: status === 401 ? 'Authentication required' : status === 403 ? 'Forbidden' : 'Ownership check failed' }, { status: status ?? 500 });
+  }
   // 3. Verify status is ready.
-  if (pkg.status !== 'ready') {
+  if (pkg.status !== 'ready' && pkg.status !== 'partial') {
     return NextResponse.json({ error: 'Package not ready' }, { status: 409 });
   }
 

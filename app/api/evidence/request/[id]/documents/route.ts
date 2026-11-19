@@ -1,5 +1,5 @@
 import { NextResponse, NextRequest } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { requireOwnedEvidenceRequest, ownershipErrorStatus } from '@/lib/resource-access';
 
 /**
  * GET /api/evidence/request/[id]/documents
@@ -21,8 +21,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
   }
 
+  try {
+    var ownershipContext = await requireOwnedEvidenceRequest(id);
+  } catch (error) {
+    const status = ownershipErrorStatus(error);
+    return NextResponse.json({ error: status === 401 ? 'Authentication required' : status === 403 ? 'Forbidden' : 'Ownership check failed' }, { status: status ?? 500 });
+  }
+
   // Verify the evidence request exists
-  const { data: requestData, error: requestError } = await supabase
+  const { data: requestData, error: requestError } = await ownershipContext.supabase
     .from('evidence_requests')
     .select('id')
     .eq('id', id)
@@ -32,7 +39,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
 
   // Query documents belonging to this request, newest first
-  const { data: docs, error: docsError } = await supabase
+  const { data: docs, error: docsError } = await ownershipContext.supabase
     .from('evidence_documents')
     .select('id, filename, content_type, file_size, storage_path, uploaded_at')
     .eq('evidence_request_id', id)

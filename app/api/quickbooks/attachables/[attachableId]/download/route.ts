@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
 import { downloadFile, DownloadFileResult } from '@/lib/quickbooks';
 import { getAttachables, normalizeAttachables } from '@/lib/quickbooks';
 
@@ -14,10 +15,11 @@ export async function GET(
   { params }: { params: Promise<{ attachableId: string }> }
 ) {
   try {
+    const { realmId } = await requireAuth();
     const { attachableId } = await params;
 
     // 1. Get all attachables to find the matching one and its metadata
-    const raw = await getAttachables();
+    const raw = await getAttachables(realmId);
     const normalized = normalizeAttachables(raw?.attachables ?? []);
     
     const attachable = normalized.find(a => a.attachableId === attachableId);
@@ -57,7 +59,7 @@ export async function GET(
     const { getTransactions, normalizeTransactionList } = await import('@/lib/quickbooks');
     const { buildEvidenceRegister } = await import('@/lib/evidence');
     
-    const rawTransactions = await getTransactions(startDate, endDate);
+    const rawTransactions = await getTransactions(startDate, endDate, realmId);
     const transactions = normalizeTransactionList(rawTransactions);
     const register = buildEvidenceRegister(transactions, normalized);
 
@@ -88,7 +90,7 @@ export async function GET(
 
     // 6. Download the file with failure collection
     const failed: DownloadFileResult[] = [];
-    const result = await downloadFile(attachableId, newFileName, destFolder, failed);
+    const result = await downloadFile(attachableId, newFileName, destFolder, failed, realmId);
 
     // Phase 5C: Return structured response with failed[] instead of 500
     if (!result.success) {
@@ -112,21 +114,23 @@ export async function GET(
       failed: failed, // Empty array for successful downloads
     });
   } catch (e: any) {
-    console.error('Download endpoint error:', e);
-    // Even unexpected errors should not crash - return structured failure
+    console.error('Download endpoint error');
+    const status = e.message === 'UNAUTHORIZED' ? 401 : e.message === 'NO_REALM_ID' || e.message === 'FORBIDDEN' ? 403 : 500;
+    if (status !== 500) return NextResponse.json({ error: e.message }, { status });
+    const { attachableId } = await params;
     return NextResponse.json({
       success: false,
-      error: e.message,
-      attachableId: (await params).attachableId,
+      error: 'QuickBooks download failed',
+      attachableId,
       fileName: 'unknown',
       timestamp: new Date().toISOString(),
       failed: [{
         success: false,
-        error: e.message,
-        attachableId: (await params).attachableId,
+        error: 'QuickBooks download failed',
+        attachableId,
         fileName: 'unknown',
         timestamp: new Date().toISOString(),
       }],
-    }, { status: 200 });
+    }, { status });
   }
 }

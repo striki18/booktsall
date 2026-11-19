@@ -53,6 +53,9 @@ export interface CandidateMatchDetail {
   };
 }
 
+const MAX_PLAUSIBLE_MATCH_CANDIDATES = 4;
+const MIN_PLAUSIBLE_MATCH_CONFIDENCE = 60;
+
 export interface MatchResult {
   documentId: string;
   transactionId: string | null;
@@ -159,15 +162,50 @@ function stringSimilarity(a: string, b: string): number {
 /**
  * Extract text from document buffer based on content type
  */
-async function extractTextFromDocument(buffer: Buffer, contentType: string): Promise<string> {
+export interface OcrEngine {
+  name?: string;
+  recognize(input: { buffer: Buffer; contentType: string }): Promise<string>;
+}
+
+let configuredOcrEngines: readonly OcrEngine[] = [];
+
+/** Configure an ordered OCR fallback chain. Existing callers can still set one engine. */
+export function configureOcrEngine(engine: OcrEngine | null) {
+  configureOcrEngines(engine ? [engine] : []);
+}
+
+export function configureOcrEngines(engines: readonly OcrEngine[]) {
+  configuredOcrEngines = [...engines];
+}
+
+async function extractWithOcr(buffer: Buffer, contentType: string): Promise<string> {
+  if (configuredOcrEngines.length === 0) {
+    throw new Error('OCR is required for this document, but no OCR engine is configured');
+  }
+
+  const failures: string[] = [];
+  for (const [index, engine] of configuredOcrEngines.entries()) {
+    const name = engine.name || `OCR engine ${index + 1}`;
+    try {
+      const text = await engine.recognize({ buffer, contentType });
+      if (text.trim()) return text;
+      failures.push(`${name}: OCR completed without readable text`);
+    } catch {
+      // Do not include provider exception text; it may contain document data or request details.
+      failures.push(`${name}: recognition failed`);
+    }
+  }
+
+  throw new Error(`All configured OCR engines failed (${failures.join('; ')})`);
+}
+export async function extractTextFromDocument(buffer: Buffer, contentType: string): Promise<string> {
   if (contentType === 'application/pdf') {
-    return extractPdfText(buffer);
+    const text = await extractPdfText(buffer);
+    return text.trim() ? text : extractWithOcr(buffer, contentType);
   }
 
   if (contentType.startsWith('image/')) {
-    // For images, we'd need OCR - returning placeholder for now
-    // In production, integrate with OCR service (Tesseract, AWS Textract, etc.)
-    return '[IMAGE CONTENT - OCR NOT IMPLEMENTED]';
+    return extractWithOcr(buffer, contentType);
   }
 
   if (contentType === 'text/plain') {
@@ -578,7 +616,8 @@ export async function matchDocumentToTransactions(
   docFields: ExtractedDocumentFields,
   collectionRequestId: string | undefined,
   transactions?: QBOTransaction[],
-  realmId?: string
+  realmId?: string,
+  claimedTransactionIds: Set<string> = new Set()
 ): Promise<MatchResult> {
   let txns = transactions;
 
@@ -658,14 +697,17 @@ export async function matchDocumentToTransactions(
   const highConfidenceCount = results.filter(r => r.confidence >= 90).length;
 
   // Build candidate details with field-level comparisons
-  const candidateDetails: CandidateMatchDetail[] = results.map(r => ({
+  const plausibleResults = results
+    .filter(r => r.confidence >= MIN_PLAUSIBLE_MATCH_CONFIDENCE)
+    .slice(0, MAX_PLAUSIBLE_MATCH_CANDIDATES);
+  const candidateDetails: CandidateMatchDetail[] = plausibleResults.map(r => ({
     transactionId: r.transaction.txnId,
     confidence: r.confidence,
     fieldComparisons: r.fieldComparisons,
     signals: r.signals,
   }));
 
-  if (bestMatch.confidence >= 90 && highConfidenceCount === 1) {
+  if (bestMatch.confidence >= 90 && highConfidenceCount === 1 && !claimedTransactionIds.has(bestMatch.transaction.txnId)) {
     return {
       documentId,
       transactionId: bestMatch.transaction.txnId,
@@ -673,7 +715,7 @@ export async function matchDocumentToTransactions(
       matchSignals: bestMatch.signals,
       status: 'matched',
       matchedTransaction: bestMatch.transaction,
-      allCandidates: results.map(r => r.transaction),
+      allCandidates: plausibleResults.map(r => r.transaction),
       candidateDetails,
     };
   } else if (bestMatch.confidence >= 60) {
@@ -683,7 +725,7 @@ export async function matchDocumentToTransactions(
       confidence: bestMatch.confidence,
       matchSignals: bestMatch.signals,
       status: 'multiple_candidates',
-      allCandidates: results.map(r => r.transaction),
+      allCandidates: plausibleResults.map(r => r.transaction),
       candidateDetails,
     };
   } else {
@@ -693,7 +735,7 @@ export async function matchDocumentToTransactions(
       confidence: bestMatch.confidence,
       matchSignals: bestMatch.signals,
       status: 'no_match',
-      allCandidates: results.map(r => r.transaction),
+      allCandidates: plausibleResults.map(r => r.transaction),
       candidateDetails,
     };
   }
@@ -704,17 +746,40 @@ export async function matchDocumentToTransactions(
  * Compares extracted fields (vendor, amount, date, document number) to detect duplicates.
  * Returns the ID of the original document if duplicate found, null otherwise.
  */
+export function hasStrongDuplicateMatch(
+  fields: ExtractedDocumentFields,
+  existing: { extracted_vendor: string | null; extracted_amount: number | null; extracted_date: string | null; extracted_document_number: string | null }
+): boolean {
+  const normalize = (value: string | null | undefined) => value?.trim().toLocaleLowerCase() || null;
+  const current = {
+    vendor: normalize(fields.vendorName),
+    amount: fields.totalAmount === null ? null : Number(fields.totalAmount.toFixed(2)),
+    date: normalize(fields.documentDate?.slice(0, 10)),
+    documentNumber: normalize(fields.documentNumber),
+  };
+  const prior = {
+    vendor: normalize(existing.extracted_vendor),
+    amount: existing.extracted_amount === null ? null : Number(Number(existing.extracted_amount).toFixed(2)),
+    date: normalize(existing.extracted_date?.slice(0, 10)),
+    documentNumber: normalize(existing.extracted_document_number),
+  };
+  const currentKnown = Object.entries(current).filter(([, value]) => value !== null);
+  const existingKnown = Object.entries(prior).filter(([, value]) => value !== null);
+  const isStrong = (known: Array<[string, string | number | null]>) =>
+    known.length >= 3 || (known.some(([key]) => key === 'documentNumber') && known.length >= 2);
+  if (!isStrong(currentKnown) || !isStrong(existingKnown)) return false;
+
+  const shared = currentKnown.filter(([key]) => prior[key as keyof typeof prior] !== null);
+  if (shared.some(([key, value]) => value !== prior[key as keyof typeof prior])) return false;
+  const sharedDocumentNumber = shared.some(([key]) => key === 'documentNumber');
+  return shared.length >= 3 || (sharedDocumentNumber && shared.length >= 2);
+}
+
 async function checkForDuplicateDocument(
   realmId: string,
   fields: ExtractedDocumentFields,
   currentDocumentId: string
 ): Promise<string | null> {
-  // Skip duplicate check if no extractable fields
-  if (!fields.vendorName && fields.totalAmount === null && !fields.documentDate && !fields.documentNumber) {
-    return null;
-  }
-
-  // Query all processed documents in the same realm
   const { data: existingDocs, error } = await supabaseAdmin
     .from('inbox_documents')
     .select('id, extracted_vendor, extracted_amount, extracted_date, extracted_document_number')
@@ -722,29 +787,13 @@ async function checkForDuplicateDocument(
     .not('id', 'eq', currentDocumentId)
     .not('processed_at', 'is', null);
 
-  if (error || !existingDocs) {
-    return null;
-  }
+  if (error || !existingDocs) return null;
 
-  // Create fingerprint for the new document
-  const newFingerprint = `${fields.vendorName || ''}_${fields.totalAmount || ''}_${fields.documentDate || ''}_${fields.documentNumber || ''}`;
-
-  // Check each existing document for matching fingerprint
   for (const doc of existingDocs) {
-    if (!doc.extracted_vendor && doc.extracted_amount === null && !doc.extracted_date && !doc.extracted_document_number) {
-      continue; // Skip documents with no extracted fields
-    }
-
-    const existingFingerprint = `${doc.extracted_vendor || ''}_${doc.extracted_amount || ''}_${doc.extracted_date || ''}_${doc.extracted_document_number || ''}`;
-
-    if (existingFingerprint === newFingerprint) {
-      return doc.id;
-    }
+    if (hasStrongDuplicateMatch(fields, doc)) return doc.id;
   }
-
   return null;
 }
-
 /**
  * Main pipeline function: Process an inbox document and match to transactions
  * Returns both the MatchResult and the extracted fields so the caller can
