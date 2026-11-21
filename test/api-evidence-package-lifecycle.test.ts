@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ requireOwnedEngagement: vi.fn(), createPackageRun: vi.fn(), from: vi.fn(), inserted: [] as Array<{ table: string; rows: unknown }> }));
+const mocks = vi.hoisted(() => ({ requireOwnedEngagement: vi.fn(), createPackageRun: vi.fn(), from: vi.fn(), filters: [] as Array<{ table: string; column: string; value: unknown }>, inserted: [] as Array<{ table: string; rows: unknown }> }));
 vi.mock('@/lib/resource-access', () => ({
   requireOwnedEngagement: mocks.requireOwnedEngagement,
   ownershipErrorStatus: (error: Error) => error.message === 'UNAUTHORIZED' ? 401 : error.message === 'FORBIDDEN' ? 403 : null,
@@ -14,6 +14,7 @@ function queryFor(table: string) {
   query.select = vi.fn(() => query);
   query.eq = vi.fn(() => query);
   query.in = vi.fn(() => query);
+  query.is = vi.fn((column: string, value: unknown) => { mocks.filters.push({ table, column, value }); return query; });
   query.single = vi.fn(async () => table === 'audit_engagements'
     ? { data: { id: 'engagement-1' }, error: null }
     : { data: { id: 'package-run-1' }, error: null });
@@ -32,6 +33,7 @@ function queryFor(table: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.inserted.length = 0;
+  mocks.filters.length = 0;
   mocks.requireOwnedEngagement.mockResolvedValue({
     supabase: { from: mocks.from },
     realmId: 'realm-1',
@@ -60,6 +62,7 @@ describe('engagement package run creation', () => {
     expect(mocks.inserted).toContainEqual({ table: 'evidence_package_items', rows: [expect.objectContaining({
       package_id: 'package-run-1', document_id: 'document-1', folder_name: 'Invoices', storage_path: 'engagement/request/invoice.pdf',
     })] });
+    expect(mocks.filters).toContainEqual({ table: 'evidence_documents', column: 'archived_at', value: null });
     expect(mocks.from).not.toHaveBeenCalledWith('qbo_evidence_register');
     expect(mocks.from).not.toHaveBeenCalledWith('evidence_review_decisions');
   });

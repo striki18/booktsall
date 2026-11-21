@@ -1,6 +1,14 @@
 import type { RegisterEntry } from './qbo-evidence-register';
 
-export type EvidenceReviewAction = 'confirm_match' | 'reject_match' | 'mark_wrong_match' | 'assign_transaction';
+export type EvidenceReviewAction =
+  | 'confirm_match'
+  | 'reject_match'
+  | 'mark_wrong_match'
+  | 'assign_transaction'
+  | 'approve_additional'
+  | 'add_duplicate'
+  | 'discard_additional'
+  | 'discard_duplicate';
 
 export interface EvidenceReviewDecision {
   id: string;

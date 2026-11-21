@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   remove: vi.fn(),
   processInboxDocument: vi.fn(),
   updateRegisterForDocument: vi.fn(),
+  recordProcessedEvidence: vi.fn(),
   insertedDocument: null as Record<string, unknown> | null,
 }));
 vi.mock('@/lib/auth', () => ({ requireAuth: mocks.requireAuth }));
@@ -18,6 +19,7 @@ vi.mock('@/lib/supabase-admin', () => ({
 }));
 vi.mock('@/lib/document-extraction', () => ({ processInboxDocument: mocks.processInboxDocument }));
 vi.mock('@/lib/qbo-evidence-register', () => ({ updateRegisterForDocument: mocks.updateRegisterForDocument }));
+vi.mock('@/lib/qbo-evidence-ingestion', () => ({ recordProcessedEvidence: mocks.recordProcessedEvidence }));
 
 import { POST } from '@/app/api/firm/inbox/documents/route';
 
@@ -33,6 +35,7 @@ beforeEach(() => {
   mocks.upload.mockResolvedValue({ error: null });
   mocks.remove.mockResolvedValue({ error: null });
   mocks.insertedDocument = null;
+  mocks.recordProcessedEvidence.mockResolvedValue({ evidenceItemId: null, evidenceRole: null, qboAttachmentStatus: null });
 });
 
 describe('firm inbox document upload', () => {
@@ -87,6 +90,42 @@ describe('firm inbox document upload', () => {
     expect(insertedId).toEqual(expect.any(String));
     expect(mocks.processInboxDocument).toHaveBeenCalledWith(insertedId, 'request-1');
     expect(mocks.updateRegisterForDocument).toHaveBeenCalledWith(insertedId, 'realm-1', 'request-1', { status: 'unmatched' }, {}, false, null);
+    expect(mocks.recordProcessedEvidence).toHaveBeenCalledWith({
+      realmId: 'realm-1', documentId: insertedId, result: expect.objectContaining({ matchResult: { status: 'unmatched' } }), actorUserId: 'user-1',
+    });
     expect((await response.json()).documents[0].processing_status).toBe('processed');
+  });
+});
+
+describe('firm upload ambiguous metadata outcomes', () => {
+  function prepare(recover: boolean) {
+    mocks.from.mockImplementation((table: string) => {
+      const query: Record<string, unknown> = {};
+      for (const method of ['select', 'eq', 'order', 'limit', 'update']) query[method] = vi.fn(() => query);
+      query.insert = vi.fn((row: Record<string, unknown>) => { mocks.insertedDocument = row; return query; });
+      query.single = vi.fn(async () => ({ data: null, error: { message: 'PRIVATE_INSERT_ERROR' } }));
+      query.maybeSingle = vi.fn(async () => table === 'collection_requests'
+        ? { data: null, error: null }
+        : { data: recover ? { ...mocks.insertedDocument } : null, error: recover ? null : { message: 'PRIVATE_LOOKUP_ERROR' } });
+      return query;
+    });
+  }
+
+  it('reconciles a successful insert whose response was lost without deleting evidence', async () => {
+    prepare(true);
+    const response = await POST(makeUploadRequest([new File(['%PDF-1.4'], 'receipt.pdf', { type: 'application/pdf' })]));
+    expect(response.status).toBe(201);
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect((await response.json()).documents[0].id).toBe(mocks.insertedDocument?.id);
+  });
+
+  it('retains the file and returns a safe reference when persistence is uncertain', async () => {
+    prepare(false);
+    const response = await POST(makeUploadRequest([new File(['%PDF-1.4'], 'receipt.pdf', { type: 'application/pdf' })]));
+    const body = await response.json();
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({ retained: true, documentId: mocks.insertedDocument?.id });
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_');
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 });

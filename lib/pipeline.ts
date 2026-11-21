@@ -14,6 +14,7 @@ import {
 } from './quickbooks';
 
 import { applyStoredEvidenceReviewDecisions, buildQboEvidenceRegister } from './qbo-evidence-register';
+import { addApprovedEvidenceItemsToPackage } from './evidence-items-package';
 
 import { generateAndSaveCsvs, splitEvidenceRegister } from './output';
 
@@ -258,12 +259,18 @@ export async function generatePackage(
       );
     }
 
-    const { missingEntries } = splitEvidenceRegister(register);
+    let packageRegister: typeof register;
+    try {
+      packageRegister = await addApprovedEvidenceItemsToPackage(register, companyId);
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : 'Unable to load approved evidence and review history';
+      return handleFailure('Evidence Item Package Assembly', reason, { error: reason });
+    }
 
-    stats.matchedCount = register.filter(
-      (e) => e.registerState === 'MATCHED'
-    ).length;
-
+    const { missingEntries } = splitEvidenceRegister(packageRegister);
+    stats.matchedCount = new Set(packageRegister
+      .filter((entry) => entry.registerState === 'MATCHED' && entry.qboTxnId)
+      .map((entry) => entry.qboTxnId)).size;
     stats.missingCount = missingEntries.length;
 
     logProgress(
@@ -280,7 +287,7 @@ export async function generatePackage(
     // STAGE 4: Evidence Document Download
     // ========================================================================
 
-    const entriesWithEvidence = register.filter(
+    const entriesWithEvidence = packageRegister.filter(
       (e) =>
         (e.registerState === 'MATCHED' || e.humanApproved === true) &&
         e.matchedDocumentId !== null &&
@@ -542,7 +549,7 @@ export async function generatePackage(
 
     try {
       csvResult = await generateAndSaveCsvs(
-        register,
+        packageRegister,
         companyId,
         startDate,
         endDate

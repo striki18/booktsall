@@ -34,7 +34,7 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
     }
 
-    const { supabase } = await requireOwnedEvidenceRequest(id);
+    const { supabase, user } = await requireOwnedEvidenceRequest(id);
 
     // Parse multipart/form-data
     let formData: FormData;
@@ -70,7 +70,8 @@ export async function POST(
 
     // Upload file to Supabase Storage bucket "evidence"
     const safeFilename = file.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
-    const storagePath = `${data.engagement_id}/${data.id}/${randomUUID()}_${safeFilename}`;
+    const documentId = randomUUID();
+    const storagePath = `${data.engagement_id}/${data.id}/${documentId}_${safeFilename}`;
     const { error: uploadError } = await supabaseAdmin
       .storage
       .from('evidence')
@@ -78,12 +79,13 @@ export async function POST(
 
     if (uploadError) {
       // Return the Supabase error message directly
-      return NextResponse.json({ error: uploadError.message }, { status: 500 });
+      return NextResponse.json({ error: 'Unable to store evidence document' }, { status: 500 });
     }
     // Persist metadata in the database
-    const { data: insertData, error: insertError } = await supabase
+    const { data: insertData, error: insertError } = await supabaseAdmin
       .from('evidence_documents')
       .insert({
+        id: documentId, uploaded_by: user.id,
         evidence_request_id: data.id,
         storage_path: storagePath,
         filename: file.name,
@@ -92,18 +94,16 @@ export async function POST(
       })
       .select();
 
-    if (insertError) {
-      // Roll back the uploaded file from storage
-      const { error: deleteError } = await supabaseAdmin
-        .storage
-        .from('evidence')
-        .remove([storagePath]);
-      if (deleteError) console.error("Evidence upload rollback failed after metadata error");
-      return NextResponse.json({ error: insertError.message }, { status: 500 });
+    let record = insertData?.[0];
+    if (insertError || !record) {
+      // A lost response does not prove the insert failed. Keep bytes and reconcile by stable ID.
+      const { data: recovered, error: recoveryError } = await supabaseAdmin.from('evidence_documents')
+        .select('id, evidence_request_id, storage_path, uploaded_at').eq('id', documentId).maybeSingle();
+      if (recoveryError || !recovered || recovered.evidence_request_id !== data.id || recovered.storage_path !== storagePath) {
+        return NextResponse.json({ error: 'Evidence was stored but its database record could not be confirmed', documentId, retained: true }, { status: 503 });
+      }
+      record = recovered;
     }
-
-    // Return metadata of the uploaded file along with storage info
-    const record = insertData?.[0];
     return NextResponse.json({
       id: record?.id,
       bucket: 'evidence',

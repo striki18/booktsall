@@ -8,15 +8,22 @@ Zevidt is a QuickBooks Online-integrated audit-evidence management platform. Its
 
 ### Evidence matching and review
 
-1. **First verified evidence:** If there is no existing evidence for the transaction in Zevidt or QuickBooks Online, a verified first evidence item may be automatically attached to the correct QBO transaction. Zevidt must verify the attachment outcome and record the result.
-2. **Additional evidence:** When evidence already exists and another document is a certain match, classify it as **ADDITIONAL EVIDENCE — REVIEW REQUIRED**. Do not attach it to QBO before human approval.
+1. **First verified evidence:** If there is no existing evidence for the transaction in Zevidt or QuickBooks Online, a verified first evidence item may be automatically attached to the correct QBO transaction. Zevidt must read the attachment back, verify its transaction association, and record the result.
+2. **Additional evidence:** When evidence already exists and another document is a certain match, classify it as **ADDITIONAL EVIDENCE — REVIEW REQUIRED**. After reviewer approval and final confirmation, attach it to QBO, read it back, verify the transaction association, and record the outcome.
 3. **Uncertain match:** Classify it as **POTENTIAL EVIDENCE — REVIEW REQUIRED**, retaining the proposed transaction for review.
-4. **Duplicate:** Classify it as **DUPLICATE FOUND — REVIEW REQUIRED** and provide human **Add** and **Discard** decisions. Do not discard or add it to QBO automatically.
-5. Replace, remove, overwrite, or discard evidence only after human approval.
-6. Allow at most one primary evidence item per transaction. Preserve additional evidence and review history rather than overwriting the primary item.
-7. Make every evidence and review action traceable to an audit event. The event schema and retention requirements remain to be defined; do not treat mutable current-state fields as an audit log.
-8. Never modify QBO financial fields.
-9. Enforce company isolation, concurrency safety, and idempotency. Retries must not create duplicate evidence items or QBO attachments, and concurrent first-evidence decisions must not create two primary items.
+4. **Duplicate:** Classify it as **DUPLICATE FOUND — REVIEW REQUIRED** and provide human **Add** and **Discard** decisions. **Add** approves it as additional evidence and permits attachment to the correct QBO transaction only after final confirmation and verification. **Discard** marks it discarded but preserves the document and immutable audit history in Zevidt; it is not attached to QBO.
+5. If a document is an exact byte-for-byte duplicate of evidence already attached to QBO, do not upload identical bytes again. Link the Zevidt evidence item to the existing QBO attachment and record the duplicate relationship.
+6. Replace, remove, overwrite, or discard evidence only after human approval. Discard does not delete the stored document or its audit history.
+7. Allow at most one primary evidence item per transaction. Preserve additional evidence and review history rather than overwriting the primary item.
+8. Make every evidence and review action traceable to an audit event. The event schema and retention requirements remain to be defined; do not treat mutable current-state fields as an audit log.
+9. Never modify QBO financial fields.
+10. Enforce company isolation, concurrency safety, and idempotency. Retries must not create duplicate evidence items or QBO attachments, and concurrent first-evidence decisions must not create two primary items.
+
+### Document extraction
+
+- Use the local OCR fallback order PaddleOCR → docTR → Tesseract for scanned PDFs and images.
+- If an engine fails or returns no readable text, try the next configured engine. If all configured engines fail, route the document to human review; never invent or silently accept extraction results.
+- OCR providers process evidence locally. Model downloads require explicit opt-in; cloud OCR is not enabled by this requirement.
 
 ### Collection and workflow
 
@@ -71,12 +78,10 @@ Do not silently resolve these questions in code or UI. Ask the product owner whe
 
 1. What exact evidence and match signals qualify as “verified” or “certain,” and what confidence threshold, if any, is acceptable for automatic QBO attachment?
 2. How must Zevidt establish that no evidence exists both in its own records and in QBO, and what should happen when QBO attachment discovery is incomplete or unavailable?
-3. After a reviewer approves additional evidence, should Zevidt attach it to QBO, keep it only in Zevidt, or offer a choice?
-4. What actions should **Add** and **Discard** perform for a duplicate, and what confirmation and audit-event details are required?
-5. What audit-event fields, immutability mechanism, retention period, and export behavior are required?
-6. What exact QBO response or subsequent read verifies a successful attachment, and how should retries or ambiguous QBO responses be handled?
-7. What are the detailed evidence requirements, client requests, and package contents for each audit type?
-8. Are reminders part of the initial release? If so, who triggers them, and may Zevidt send messages or only show reminders to the firm?
-9. Which OCR/extraction providers and matching rules should be enabled, and what review behavior applies when extraction fails?
+3. What audit-event fields, immutability mechanism, retention period, and export behavior are required?
+4. What should happen after an ambiguous QBO upload response, when retrying could create a duplicate attachment?
+5. What are the detailed evidence requirements, client requests, and package contents for each audit type?
+6. Are reminders part of the initial release? If so, who triggers them, and may Zevidt send messages or only show reminders to the firm?
+7. Which matching rules should be enabled, and what review behavior applies when extraction or matching is inconclusive?
 
 Until answered, preserve evidence, avoid automatic destructive decisions, and mark unverified behavior **BLOCKED** rather than assuming it works.

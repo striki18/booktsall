@@ -43,6 +43,10 @@ vi.mock('../lib/qbo-evidence-register', () => ({
   updateRegisterForDocument: vi.fn(),
 }));
 
+vi.mock('../lib/evidence-items-package', () => ({
+  addApprovedEvidenceItemsToPackage: vi.fn((entries) => Promise.resolve(entries)),
+}));
+
 vi.mock('../lib/output', () =>({
   generateAndSaveCsvs: vi.fn(),
   splitEvidenceRegister: vi.fn(),
@@ -94,6 +98,7 @@ import { generateAndSaveCsvs, splitEvidenceRegister } from '../lib/output';
 import { generateZip, verifyZip } from '../lib/zip';
 import { processCollectionRequestDocuments, downloadDocument } from '../lib/document-extraction';
 import { supabaseAdmin } from '../lib/supabase-admin';
+import { addApprovedEvidenceItemsToPackage } from '../lib/evidence-items-package';
 import { generatePackage, PipelineResult } from '../lib/pipeline';
 
 describe('pipeline.ts - generatePackage', () => {
@@ -161,6 +166,7 @@ describe('pipeline.ts - generatePackage', () => {
     (getRegisterEntries as any).mockResolvedValue([]);
     (buildQboEvidenceRegister as any).mockImplementation(async () => getRegisterEntries(companyId, undefined, startDate, endDate));
     (applyStoredEvidenceReviewDecisions as any).mockImplementation(async (entries: any[]) => entries);
+    (addApprovedEvidenceItemsToPackage as any).mockImplementation(async (entries: any[]) => entries);
     (updateRegisterForDocument as any).mockResolvedValue(undefined);
     (splitEvidenceRegister as any).mockReturnValue({ missingEntries: [], matchedEntries: [] });
     (generateAndSaveCsvs as any).mockResolvedValue({
@@ -314,6 +320,44 @@ describe('pipeline.ts - generatePackage', () => {
       ]));
     });
 
+    it('includes approved item-level evidence in attachment downloads and package register rows', async () => {
+      const primary = {
+        id: 'register-1', qboTxnId: 'txn-1', qboTxnType: 'Bill', qboTxnDate: '2023-06-15', qboTxnVendor: 'Vendor A',
+        qboTxnAmount: 100, qboTxnDocNumber: 'INV-001', attachableId: null, attachmentFilename: 'primary.pdf',
+        registerState: 'MATCHED', matchedDocumentId: 'doc-primary', reviewCandidateTxnIds: [],
+      };
+      const additional = {
+        ...primary, matchedDocumentId: 'doc-additional', attachmentFilename: 'approved-extra.pdf', evidenceItemId: 'item-2',
+        evidenceRole: 'additional', evidenceReviewStatus: 'approved', qboAttachmentStatus: 'verified', humanApproved: true,
+        reviewDecision: { action: 'approve_additional', selected_qbo_txn_id: 'txn-1', reviewer_user_id: 'reviewer-1', created_at: '2026-11-02T00:00:00Z', rationale: 'Confirmed' },
+        reviewHistory: [{ id: 'event-2', action: 'approve_additional' }],
+      };
+      (buildQboEvidenceRegister as any).mockResolvedValue([primary]);
+      (applyStoredEvidenceReviewDecisions as any).mockResolvedValue([primary]);
+      (addApprovedEvidenceItemsToPackage as any).mockResolvedValue([primary, additional]);
+      const docs = new Map<string, any>([
+        ['doc-primary', { data: { storage_path: 'inbox/realm/doc-primary/primary.pdf', filename: 'primary.pdf' }, error: null }],
+        ['doc-additional', { data: { storage_path: 'inbox/realm/doc-additional/approved-extra.pdf', filename: 'approved-extra.pdf' }, error: null }],
+      ]);
+      setupSupabaseMock({ inboxDocuments: { data: [], error: null }, collectionRequest: { data: null, error: null }, evidenceDocuments: docs });
+
+      const result = await generatePackage(companyId, startDate, endDate);
+
+      expect(result.success).toBe(true);
+      expect(addApprovedEvidenceItemsToPackage).toHaveBeenCalledWith([expect.objectContaining({
+        id: 'register-1', qboTxnId: 'txn-1', matchedDocumentId: 'doc-primary', registerState: 'MATCHED',
+      })], companyId);
+      expect(downloadDocument).toHaveBeenCalledTimes(2);
+      expect(downloadDocument).toHaveBeenCalledWith('inbox/realm/doc-additional/approved-extra.pdf');
+      expect(generateAndSaveCsvs).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({
+        matchedDocumentId: 'doc-additional', evidenceItemId: 'item-2', evidenceRole: 'additional',
+        qboAttachmentStatus: 'verified', reviewDecision: expect.objectContaining({ action: 'approve_additional' }),
+      })]), companyId, startDate, endDate);
+      expect(generateZip).toHaveBeenCalledWith(companyId, startDate, endDate, expect.arrayContaining([
+        expect.objectContaining({ matchedDocumentId: 'doc-additional', fileName: 'approved-extra.pdf' }),
+      ]), expect.any(Array));
+    });
+
     it('should correctly sequence all stages (getRegisterEntries called twice)', async () => {
       const callOrder: string[] = [];
       
@@ -321,6 +365,7 @@ describe('pipeline.ts - generatePackage', () => {
       (getAttachables as any).mockImplementation(async () => { callOrder.push('getAttachables'); return { QueryResponse: { Attachable: [] } }; });
       (buildQboEvidenceRegister as any).mockImplementation(async () => { callOrder.push('buildQboEvidenceRegister'); return []; });
       (applyStoredEvidenceReviewDecisions as any).mockImplementation(async (entries: any[]) => { callOrder.push('applyStoredEvidenceReviewDecisions'); return entries; });
+      (addApprovedEvidenceItemsToPackage as any).mockImplementation(async (entries: any[]) => { callOrder.push('addApprovedEvidenceItemsToPackage'); return entries; });
       (generateAndSaveCsvs as any).mockImplementation(async () => { callOrder.push('generateAndSaveCsvs'); return { evidenceRegisterPath: '', missingDocumentsPath: '', matchedCount: 0, missingCount: 0 }; });
       (generateZip as any).mockImplementation(async () => { callOrder.push('generateZip'); return '/tmp/test.zip'; });
 
@@ -331,6 +376,7 @@ describe('pipeline.ts - generatePackage', () => {
         'getAttachables',
         'buildQboEvidenceRegister',
         'applyStoredEvidenceReviewDecisions',
+        'addApprovedEvidenceItemsToPackage',
         'generateAndSaveCsvs',
         'generateZip',
       ]);

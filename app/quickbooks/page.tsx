@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { buildQboTransactionUrl } from '@/lib/qbo-links';
+import { countEvidenceRegisterStates, filterAndSortEvidenceRegister, type EvidenceRegisterSort, type EvidenceRegisterState, type EvidenceRegisterViewRow } from '@/lib/evidence-register-view';
 import { CompanySwitcher } from './company-switcher';
 import { WorkspaceHeader, useWordingMode } from './icons';
 import styles from './page.module.css';
@@ -106,7 +107,30 @@ interface WorkspaceAttachable {
   orphaned: boolean;
 }
 
-type NavSection = 'overview' | 'generate' | 'evidence' | 'missing' | 'attachments';
+type NavSection = 'overview' | 'generate' | 'evidence' | 'missing' | 'attachments' | 'requirements';
+
+interface EvidenceRequirementRule {
+  id: string;
+  name: string;
+  transaction_type: string;
+  amount_min: number | string | null;
+  amount_max: number | string | null;
+  document_type: string;
+  is_active: boolean;
+}
+
+interface RequirementEvaluation {
+  transaction: { txnId: string; txnType: string | null; date: string | null; amount: number | null; vendor: string | null; docNumber: string | null };
+  status: 'satisfied' | 'missing' | 'review_required' | 'unknown' | 'not_applicable' | 'not_configured';
+  checks: Array<{ ruleId: string; ruleName: string; documentType: string; status: string; evidenceCount: number }>;
+}
+
+function localDateValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 const PIPELINE_STAGES = [
   { key: 'transactions', label: 'Retrieving Transactions' },
@@ -124,6 +148,7 @@ const NAV_ITEMS: { id: NavSection; label: string; icon: React.ReactNode }[] = [
   { id: 'evidence', label: 'Evidence', icon: <EvidenceIcon /> },
   { id: 'missing', label: 'Missing Documents', icon: <MissingIcon /> },
   { id: 'attachments', label: 'Attachments', icon: <AttachmentsIcon /> },
+  { id: 'requirements', label: 'Evidence rules', icon: <SettingsIcon /> },
 ];
 
 function getSectionLabel(section: NavSection, financeMode: boolean) {
@@ -133,6 +158,7 @@ function getSectionLabel(section: NavSection, financeMode: boolean) {
     evidence: { general: 'Documents & transactions', finance: 'Evidence register' },
     missing: { general: 'Needs documents', finance: 'Missing documents' },
     attachments: { general: 'Files', finance: 'Attachments' },
+    requirements: { general: 'Evidence rules', finance: 'Evidence requirements' },
   };
   return labels[section][financeMode ? 'finance' : 'general'];
 }
@@ -298,6 +324,12 @@ export default function QuickbooksPage() {
   const [workspaceActivityLoaded, setWorkspaceActivityLoaded] = useState(false);
   const [workspaceActivityKey, setWorkspaceActivityKey] = useState('');
   const [workspaceActivityUpdatedAt, setWorkspaceActivityUpdatedAt] = useState<string | null>(null);
+  const [activitySearch, setActivitySearch] = useState('');
+  const [activityType, setActivityType] = useState('ALL');
+  const [activityFileStatus, setActivityFileStatus] = useState<'ALL' | 'WITH_FILES' | 'WITHOUT_FILES'>('ALL');
+  const [activityMinAmount, setActivityMinAmount] = useState('');
+  const [activityMaxAmount, setActivityMaxAmount] = useState('');
+  const [activitySort, setActivitySort] = useState<'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc' | 'name_asc'>('date_desc');
 
   // Generation state
   const [generating, setGenerating] = useState(false);
@@ -319,6 +351,158 @@ export default function QuickbooksPage() {
 
   // Settings modal
   const [showSettings, setShowSettings] = useState(false);
+  const [evidenceRows, setEvidenceRows] = useState<EvidenceRegisterViewRow[]>([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const [evidenceSearch, setEvidenceSearch] = useState('');
+  const [evidenceStateFilter, setEvidenceStateFilter] = useState<EvidenceRegisterState | 'ALL'>('ALL');
+  const [evidenceSort, setEvidenceSort] = useState<EvidenceRegisterSort>('date_desc');
+  const [selectedEvidenceRow, setSelectedEvidenceRow] = useState<EvidenceRegisterViewRow | null>(null);
+  const [requirementRules, setRequirementRules] = useState<EvidenceRequirementRule[]>([]);
+  const [requirementRows, setRequirementRows] = useState<RequirementEvaluation[]>([]);
+  const [requirementsLoading, setRequirementsLoading] = useState(false);
+  const [requirementsSaving, setRequirementsSaving] = useState(false);
+  const [requirementsError, setRequirementsError] = useState<string | null>(null);
+  const [requirementsNotice, setRequirementsNotice] = useState<string | null>(null);
+  const [ruleName, setRuleName] = useState('');
+  const [ruleTransactionType, setRuleTransactionType] = useState('Bill');
+  const [ruleAmountMin, setRuleAmountMin] = useState('');
+  const [ruleAmountMax, setRuleAmountMax] = useState('');
+  const [ruleDocumentType, setRuleDocumentType] = useState('invoice');
+  const [registerStartDate, setRegisterStartDate] = useState(() => {
+    const date = new Date();
+    date.setDate(1);
+    return localDateValue(date);
+  });
+  const [registerEndDate, setRegisterEndDate] = useState(() => localDateValue(new Date()));
+
+  const loadEvidenceRules = useCallback(async () => {
+    setRequirementsLoading(true);
+    setRequirementsError(null);
+    try {
+      const response = await fetch('/api/evidence/requirements', { cache: 'no-store' });
+      const body = await response.json();
+      if (!response.ok || !Array.isArray(body)) throw new Error(body.error || 'Unable to load evidence rules');
+      setRequirementRules(body);
+    } catch (error) {
+      setRequirementsError(error instanceof Error ? error.message : 'Unable to load evidence rules');
+    } finally {
+      setRequirementsLoading(false);
+    }
+  }, []);
+
+  const evaluateEvidenceRules = useCallback(async () => {
+    if (!registerStartDate || !registerEndDate || registerStartDate > registerEndDate) {
+      setRequirementsError('Choose a valid date range before evaluating.');
+      return;
+    }
+    setRequirementsLoading(true);
+    setRequirementsError(null);
+    setRequirementsNotice(null);
+    try {
+      const query = new URLSearchParams({ startDate: registerStartDate, endDate: registerEndDate });
+      const response = await fetch(`/api/evidence/requirements/evaluate?${query}`, { cache: 'no-store' });
+      const body = await response.json();
+      if (!response.ok || !Array.isArray(body.rows)) throw new Error(body.error || 'Unable to evaluate evidence rules');
+      setRequirementRows(body.rows);
+      if (body.rows.length === 0) setRequirementsNotice('No cached transaction register rows were found for this date range. Refresh the transaction register first to load transactions.');
+    } catch (error) {
+      setRequirementsError(error instanceof Error ? error.message : 'Unable to evaluate evidence rules');
+    } finally {
+      setRequirementsLoading(false);
+    }
+  }, [registerStartDate, registerEndDate]);
+
+  const createEvidenceRule = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setRequirementsSaving(true);
+    setRequirementsError(null);
+    setRequirementsNotice(null);
+    try {
+      const response = await fetch('/api/evidence/requirements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: ruleName,
+          transaction_type: ruleTransactionType,
+          amount_min: ruleAmountMin === '' ? null : Number(ruleAmountMin),
+          amount_max: ruleAmountMax === '' ? null : Number(ruleAmountMax),
+          document_type: ruleDocumentType,
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Unable to create evidence rule');
+      setRuleName('');
+      setRequirementRules((current) => [body, ...current]);
+      setRequirementsNotice('Rule saved. It will apply only to matching transaction types and amounts.');
+    } catch (error) {
+      setRequirementsError(error instanceof Error ? error.message : 'Unable to create evidence rule');
+    } finally {
+      setRequirementsSaving(false);
+    }
+  };
+
+  const toggleEvidenceRule = async (rule: EvidenceRequirementRule) => {
+    setRequirementsError(null);
+    setRequirementsNotice(null);
+    try {
+      const response = await fetch(`/api/evidence/requirements/${encodeURIComponent(rule.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: !rule.is_active }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Unable to update evidence rule');
+      setRequirementRules((current) => current.map((item) => item.id === body.id ? body : item));
+    } catch (error) {
+      setRequirementsError(error instanceof Error ? error.message : 'Unable to update evidence rule');
+    }
+  };
+
+  const fetchEvidenceRegister = useCallback(async () => {
+    if (!realmId || !registerStartDate || !registerEndDate) return [];
+    const response = await fetch('/api/evidence/qbo-register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ realmId, startDate: registerStartDate, endDate: registerEndDate }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || 'Unable to load the evidence register');
+    if (!Array.isArray(body.register)) throw new Error('The evidence register response was invalid');
+    return body.register as EvidenceRegisterViewRow[];
+  }, [realmId, registerStartDate, registerEndDate]);
+
+  const loadEvidenceRegister = useCallback(async () => {
+    if (!realmId || !registerStartDate || !registerEndDate) return;
+    setEvidenceLoading(true);
+    setEvidenceError(null);
+    try {
+      setEvidenceRows(await fetchEvidenceRegister());
+    } catch (cause) {
+      setEvidenceError(cause instanceof Error ? cause.message : 'Unable to load the evidence register');
+      setEvidenceRows([]);
+    } finally {
+      setEvidenceLoading(false);
+    }
+  }, [realmId, registerStartDate, registerEndDate, fetchEvidenceRegister]);
+
+  const selectWorkspaceSection = useCallback((section: NavSection) => {
+    setActiveSection(section);
+    if (section === 'evidence' && connectionStatus === 'connected' && realmId) void loadEvidenceRegister();
+  }, [connectionStatus, realmId, loadEvidenceRegister]);
+
+  useEffect(() => {
+    if (activeSection === 'requirements' && authStatus === 'signed_in') void loadEvidenceRules();
+  }, [activeSection, authStatus, loadEvidenceRules]);
+
+  useEffect(() => {
+    if ((activeSection === 'overview' || activeSection === 'evidence') && connectionStatus === 'connected' && realmId && evidenceRows.length === 0 && !evidenceLoading) {
+      void loadEvidenceRegister();
+    }
+  }, [activeSection, connectionStatus, realmId, evidenceRows.length, evidenceLoading, loadEvidenceRegister]);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('settings') === 'integrations') setShowSettings(true);
+  }, []);
 
   useEffect(() => {
     const section = new URLSearchParams(window.location.search).get('section');
@@ -791,9 +975,27 @@ export default function QuickbooksPage() {
 
   // Section renderers
   const renderWorkspaceActivity = () => {
-    const transactions = workspaceTransactions.filter((transaction) => transaction.txnId);
+    const allTransactions = workspaceTransactions.filter((transaction) => transaction.txnId);
     const linkedFiles = workspaceAttachables.filter((attachable) => !attachable.orphaned && attachable.entityId);
     const orphanedFiles = workspaceAttachables.filter((attachable) => attachable.orphaned);
+    const transactionIdsWithFiles = new Set(linkedFiles.map((attachable) => attachable.entityId).filter(Boolean));
+    const normalizedSearch = activitySearch.trim().toLowerCase();
+    const minAmount = activityMinAmount === '' ? null : Number(activityMinAmount);
+    const maxAmount = activityMaxAmount === '' ? null : Number(activityMaxAmount);
+    const transactionTypes = [...new Set(allTransactions.map((transaction) => transaction.txnType).filter((value): value is string => Boolean(value)))].sort((left, right) => left.localeCompare(right));
+    const transactions = allTransactions
+      .filter((transaction) => activityType === 'ALL' || transaction.txnType === activityType)
+      .filter((transaction) => activityFileStatus === 'ALL' || (activityFileStatus === 'WITH_FILES' ? transactionIdsWithFiles.has(transaction.txnId) : !transactionIdsWithFiles.has(transaction.txnId)))
+      .filter((transaction) => minAmount == null || (transaction.amount != null && transaction.amount >= minAmount))
+      .filter((transaction) => maxAmount == null || (transaction.amount != null && transaction.amount <= maxAmount))
+      .filter((transaction) => !normalizedSearch || [transaction.vendor, transaction.docNumber, transaction.txnType, transaction.txnId].some((value) => value?.toLowerCase().includes(normalizedSearch)))
+      .sort((left, right) => {
+        if (activitySort === 'date_asc') return (left.date || '').localeCompare(right.date || '');
+        if (activitySort === 'amount_desc') return (right.amount ?? Number.NEGATIVE_INFINITY) - (left.amount ?? Number.NEGATIVE_INFINITY);
+        if (activitySort === 'amount_asc') return (left.amount ?? Number.POSITIVE_INFINITY) - (right.amount ?? Number.POSITIVE_INFINITY);
+        if (activitySort === 'name_asc') return (left.vendor || '').localeCompare(right.vendor || '');
+        return (right.date || '').localeCompare(left.date || '');
+      });
 
     return (
       <section className={`${styles.card} ${styles.activityCard}`} aria-labelledby="workspace-activity-title">
@@ -830,6 +1032,16 @@ export default function QuickbooksPage() {
           </button>
         </form>
 
+        {allTransactions.length > 0 ? <div className={styles.activityFilterBar} aria-label="Filter and sort transactions">
+          <label className={styles.activitySearchField}><span>Search</span><input type="search" value={activitySearch} onChange={(event) => setActivitySearch(event.target.value)} placeholder="Name, number, type, or ID" /></label>
+          <label><span>Type</span><select value={activityType} onChange={(event) => setActivityType(event.target.value)}><option value="ALL">All types</option>{transactionTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
+          <label><span>Documents</span><select value={activityFileStatus} onChange={(event) => setActivityFileStatus(event.target.value as 'ALL' | 'WITH_FILES' | 'WITHOUT_FILES')}><option value="ALL">All transactions</option><option value="WITH_FILES">With documents</option><option value="WITHOUT_FILES">Without documents</option></select></label>
+          <label><span>Min amount</span><input type="number" min="0" step="0.01" value={activityMinAmount} onChange={(event) => setActivityMinAmount(event.target.value)} placeholder="0" /></label>
+          <label><span>Max amount</span><input type="number" min="0" step="0.01" value={activityMaxAmount} onChange={(event) => setActivityMaxAmount(event.target.value)} placeholder="Any" /></label>
+          <label><span>Sort</span><select value={activitySort} onChange={(event) => setActivitySort(event.target.value as typeof activitySort)}><option value="date_desc">Newest first</option><option value="date_asc">Oldest first</option><option value="amount_desc">Amount: high to low</option><option value="amount_asc">Amount: low to high</option><option value="name_asc">Name: A–Z</option></select></label>
+          {(activitySearch || activityType !== 'ALL' || activityFileStatus !== 'ALL' || activityMinAmount || activityMaxAmount || activitySort !== 'date_desc') ? <button type="button" className={styles.btn + ' ' + styles.btnLink} onClick={() => { setActivitySearch(''); setActivityType('ALL'); setActivityFileStatus('ALL'); setActivityMinAmount(''); setActivityMaxAmount(''); setActivitySort('date_desc'); }}>Clear</button> : null}
+        </div> : null}
+
         {connectionStatus !== 'connected' ? (
           <p className={styles.activityEmpty}>{authStatus === 'signed_out' ? 'Sign in to Zevidt, then connect QuickBooks to load this company’s activity.' : 'Connect QuickBooks to see this company’s transactions and linked files.'}</p>
         ) : null}
@@ -843,7 +1055,7 @@ export default function QuickbooksPage() {
         {transactions.length > 0 ? (
           <>
             <p className={styles.activitySummary}>
-              {transactions.length} transactions
+              {transactions.length} of {allTransactions.length} transactions
               {!workspaceAttachableError ? ` · ${linkedFiles.length} transaction-linked file records · ${orphanedFiles.length} unattached file records` : ''}
             </p>
             <div className={styles.activityTableWrap}>
@@ -897,149 +1109,55 @@ export default function QuickbooksPage() {
     );
   };
 
-  const renderOverview = () => (
-    <>
-    <div className={styles.card}>
-      <div style={{ marginBottom: 'var(--space-8)' }}>
-        <h1 style={{ 
-          fontSize: 'var(--text-4xl)', 
-          fontWeight: 'var(--font-semibold)', 
-          color: 'var(--color-text-primary)',
-          letterSpacing: '-0.02em',
-          lineHeight: 'var(--leading-tight)',
-          marginBottom: 'var(--space-4)'
-        }}>
-          {financeMode ? 'Know which transactions still need evidence.' : 'Know what’s missing. Get it handled.'}
-        </h1>
-        <p style={{ 
-          fontSize: 'var(--text-xl)', 
-          color: 'var(--color-text-secondary)',
-          fontWeight: 'var(--font-normal)',
-          lineHeight: 'var(--leading-relaxed)',
-          maxWidth: '600px'
-        }}>
-          {financeMode
-            ? 'Bring in supporting documents, review match suggestions, and prepare a traceable evidence package for your QuickBooks transactions.'
-            : 'Bring in the documents, see what needs a closer look, and prepare a clear record for every QuickBooks transaction.'}
-        </p>
-      </div>
-
-      <div className={styles.connectionGrid}>
-        <div className={styles.connectionField}>
-          <label>Connection Status</label>
-          <div className={styles.connectionStatusMain}>
-            {renderConnectionBadge()}
-            <span className={styles.statusText}>
-              {connectionStatus === 'connected'
-                ? 'Active connection to QuickBooks Online'
-                : authStatus === 'signed_out'
-                  ? 'Sign in to Zevidt before connecting QuickBooks'
-                  : 'No active connection'}
-            </span>
-          </div>
-        </div>
-
-        <div className={styles.connectionField}>
-          <label>Company</label>
-          <div className={styles.companyDisplay}>
-            {company?.CompanyInfo?.CompanyName ? (
-              <>
-                <strong>{company.CompanyInfo.CompanyName}</strong>
-                {company.CompanyInfo.LegalName && company.CompanyInfo.LegalName !== company.CompanyInfo.CompanyName && (
-                  <span className={styles.legalName}>({company.CompanyInfo.LegalName})</span>
-                )}
-              </>
-            ) : (
-              <span className={styles.notConnected}>Not connected</span>
-            )}
-          </div>
-        </div>
-
-        <div className={styles.connectionField}>
-          <label>Realm ID</label>
-          <code className={styles.realmId}>{realmId || '—'}</code>
-        </div>
-
-        <div className={styles.connectionField}>
-          <label>Country / Currency</label>
+  const renderOverview = () => {
+    const counts = countEvidenceRegisterStates(evidenceRows);
+    const attentionRows = evidenceRows.filter((row) => row.registerState === 'REVIEW_REQUIRED' || row.registerState === 'WRONG_MATCHED' || row.registerState === 'MISSING').slice(0, 6);
+    const statusCards: { state: EvidenceRegisterState; label: string; helper: string }[] = [
+      { state: 'MATCHED', label: 'Matched', helper: 'Ready' },
+      { state: 'MISSING', label: 'Missing', helper: 'Needs a document' },
+      { state: 'REVIEW_REQUIRED', label: 'Needs review', helper: 'Waiting for you' },
+      { state: 'WRONG_MATCHED', label: 'Wrong match', helper: 'Needs correction' },
+    ];
+    return (
+      <div className={styles.homeOverview}>
+        <section className={styles.homeIntro}>
           <div>
-            {company?.CompanyInfo?.Country && company?.CompanyInfo?.Currency ? (
-              <span>{company.CompanyInfo.Country} / {company.CompanyInfo.Currency}</span>
-            ) : (
-              <span className={styles.notConnected}>—</span>
-            )}
+            <span className={styles.homeEyebrow}>{connectionStatus === 'connected' ? 'Workspace up to date' : 'Setup required'}</span>
+            <h2>{company?.CompanyInfo?.CompanyName ? `Good to see you. Here’s ${company.CompanyInfo.CompanyName}.` : 'Everything that needs your attention, in one place.'}</h2>
+            <p>{financeMode ? 'Track evidence across every transaction and finish the exceptions first.' : 'See what arrived, what is missing, and what you can finish now.'}</p>
           </div>
-        </div>
+          <button className={styles.btn + ' ' + styles.btnPrimary + ' ' + styles.btnLg} onClick={() => window.location.assign('/documents')}>Upload documents</button>
+        </section>
 
-        {/* Token Health Indicator */}
-        <div className={styles.connectionField}>
-          <label>Token Health</label>
-          <div className={styles.tokenHealthDisplay}>
-            <span className={`${styles.tokenHealthBadge} ${styles['tokenHealth' + tokenHealth.charAt(0).toUpperCase() + tokenHealth.slice(1)]}`}>
-              {tokenHealth === 'healthy' && '● Healthy'}
-              {tokenHealth === 'expiring' && '● Expiring Soon'}
-              {tokenHealth === 'expired' && '● Expired'}
-              {tokenHealth === 'refresh_failed' && '● Refresh Failed'}
-              {tokenHealth === 'unknown' && '● Unknown'}
-            </span>
-            {tokenInfo && (
-              <span className={styles.tokenExpiry}>
-                Expires: {new Date(tokenInfo.expires_at).toLocaleString()}
-              </span>
-            )}
-            {tokenRefreshError && (
-              <span className={styles.tokenError}>
-                <AlertIcon /> {tokenRefreshError}
-              </span>
-            )}
-          </div>
-        </div>
+        <section className={styles.homeConnectionStrip} aria-label="QuickBooks connection">
+          <span className={connectionStatus === 'connected' ? styles.homeConnectionOnline : styles.homeConnectionOffline} />
+          <strong>{connectionStatus === 'connected' ? 'QuickBooks connected' : 'QuickBooks needs connection'}</strong>
+          <span>{company?.CompanyInfo?.CompanyName || 'No company selected'}</span>
+          <span className={styles.homeConnectionMeta}>{workspaceActivityUpdatedAt ? `Last synced ${new Date(workspaceActivityUpdatedAt).toLocaleTimeString()}` : 'Not synced yet'}</span>
+          {connectionStatus !== 'connected' ? <button className={styles.btn + ' ' + styles.btnSecondary} onClick={handleConnect}>Connect</button> : <button className={styles.btn + ' ' + styles.btnLink} onClick={() => setShowSettings(true)}>Integration settings</button>}
+        </section>
 
-        {/* Token Refresh Status */}
-        <div className={styles.connectionField}>
-          <label>Token Refresh</label>
-          <div>
-            <span>{getTokenRefreshStatus()}</span>
-          </div>
-        </div>
+        <section className={styles.homeStatusGrid} aria-label="Evidence status">
+          {statusCards.map((status) => <button key={status.state} type="button" className={styles.homeStatusCard} onClick={() => { setEvidenceStateFilter(status.state); selectWorkspaceSection('evidence'); }}>
+            <span>{status.label}</span><strong>{counts[status.state]}</strong><small>{status.helper}</small>
+          </button>)}
+        </section>
+
+        <section className={styles.homeAttention} aria-labelledby="attention-title">
+          <div className={styles.homeSectionHeading}><div><span className={styles.homeEyebrow}>PRIORITY</span><h2 id="attention-title">Needs attention</h2></div><button className={styles.btn + ' ' + styles.btnLink} onClick={() => selectWorkspaceSection('evidence')}>View all transactions →</button></div>
+          {evidenceLoading ? <p className={styles.activityEmpty}>Loading your workspace…</p> : attentionRows.length ? <div className={styles.homeAttentionList}>{attentionRows.map((row, index) => <button type="button" key={String(row.id ?? `${row.qboTxnId}-${index}`)} onClick={() => { setSelectedEvidenceRow(row); selectWorkspaceSection('evidence'); }}>
+            <span className={`${styles.registerStatus} ${styles[`registerStatus_${row.registerState}`]}`}>{statusCards.find((status) => status.state === row.registerState)?.label}</span>
+            <strong>{row.qboTxnVendor || row.qboTxnType || 'Unlinked document'}</strong>
+            <span>{row.qboTxnDocNumber || row.attachmentFilename || 'No reference'}</span>
+            <span>{row.qboTxnAmount == null ? '—' : row.qboTxnAmount.toLocaleString()}</span>
+            <span aria-hidden="true">→</span>
+          </button>)}</div> : <p className={styles.activityEmpty}>{connectionStatus === 'connected' ? 'Nothing needs attention in this date range.' : 'Connect QuickBooks to load your workspace.'}</p>}
+        </section>
+
+        {renderWorkspaceActivity()}
       </div>
-
-      <div className={styles.cardActions}>
-        {connectionStatus !== 'connected' ? (
-          <button 
-            className={styles.btn + ' ' + styles.btnPrimary + ' ' + styles.btnLg} 
-            onClick={handleConnect} 
-            disabled={connectionStatus === 'checking' || authStatus === 'checking' || authStatus === 'error'}
-          >
-            {authStatus === 'checking' ? 'Checking sign-in…' : authStatus === 'signed_out' ? 'Sign in to Zevidt' : authStatus === 'error' ? 'Sign-in unavailable' : 'Connect QuickBooks'}
-          </button>
-        ) : (
-          <>
-            <button className={styles.btn + ' ' + styles.btnSecondary} onClick={handleRefreshConnection}>
-              Refresh Connection
-            </button>
-            <button
-              className={styles.btn + ' ' + styles.btnSecondary}
-              onClick={handleRefreshToken}
-              disabled={tokenHealth === 'healthy' && !tokenRefreshError}
-            >
-              Refresh Token
-            </button>
-            {tokenHealth === 'expired' || tokenHealth === 'refresh_failed' ? (
-              <button
-                className={styles.btn + ' ' + styles.btnPrimary + ' ' + styles.btnLg}
-                onClick={handleReconnect}
-              >
-                Reconnect QuickBooks
-              </button>
-            ) : null}
-          </>
-        )}
-      </div>
-    </div>
-    {renderWorkspaceActivity()}
-    </>
-  );
+    );
+  };
 
   const renderGenerate = () => (
     <div className={styles.card}>
@@ -1275,31 +1393,166 @@ export default function QuickbooksPage() {
     );
   };
 
-  const renderEvidence = () => (
-    <div className={styles.card}>
-      <h2 className={styles.cardTitle}>{financeMode ? 'Evidence register' : 'Documents & transactions'}</h2>
+  const renderEvidence = () => {
+    const counts = countEvidenceRegisterStates(evidenceRows);
+    const visibleRows = filterAndSortEvidenceRegister(evidenceRows, evidenceStateFilter, evidenceSearch, evidenceSort);
+    const stateLabels: Record<EvidenceRegisterState, string> = {
+      MATCHED: financeMode ? 'Matched' : 'Looks right',
+      MISSING: financeMode ? 'Missing' : 'No document yet',
+      REVIEW_REQUIRED: financeMode ? 'Review required' : 'Needs a look',
+      WRONG_MATCHED: financeMode ? 'Wrong match' : 'Possibly linked to the wrong item',
+    };
 
-      {generationResult?.success ? (
-        <div className={styles.notice}>
-          <p>The evidence register is included in the generated package as <code>evidence_register.csv</code>.</p>
-          <p>Fields included (per Phase 6 specification):</p>
-          <ul className={styles.fieldList}>
-            <li><strong>Date</strong> — Transaction date</li>
-            <li><strong>Transaction Type</strong> — Type of transaction (Invoice, Bill, etc.)</li>
-            <li><strong>Doc Number</strong> — Document/reference number</li>
-            <li><strong>Vendor/Customer</strong> — Counterparty name</li>
-            <li><strong>Amount</strong> — Transaction amount</li>
-            <li><strong>Attachment Filename</strong> — Matched attachment file name</li>
-            <li><strong>Attachable ID</strong> — QuickBooks Attachable ID</li>
-            <li><strong>Status</strong> — Matched/Missing/Orphaned</li>
-          </ul>
-          <p className={styles.noticeHint}>Download the package to access the full evidence register.</p>
+    return (
+      <section className={styles.card} aria-labelledby="evidence-register-title">
+        <div className={styles.registerHeading}>
+          <div>
+            <h2 id="evidence-register-title" className={styles.cardTitle}>{financeMode ? 'Evidence register' : 'Documents & transactions'}</h2>
+            <p className={styles.activityDescription}>{financeMode ? 'See what is matched, missing, or needs a decision.' : 'Find each transaction, its documents, and anything that needs a closer look.'}</p>
+          </div>
+          {connectionStatus === 'connected' ? <button type="button" className={styles.btn + ' ' + styles.btnSecondary} onClick={() => void loadEvidenceRegister()} disabled={evidenceLoading}>{evidenceLoading ? 'Loading…' : 'Refresh'}</button> : null}
         </div>
-      ) : (
-        <p className={styles.notGenerated}>Generate a package to view evidence register details.</p>
-      )}
-    </div>
-  );
+
+        <form className={styles.registerControls} onSubmit={(event) => { event.preventDefault(); void loadEvidenceRegister(); }}>
+          <label><span>From</span><input type="date" value={registerStartDate} onChange={(event) => setRegisterStartDate(event.target.value)} required /></label>
+          <label><span>To</span><input type="date" value={registerEndDate} onChange={(event) => setRegisterEndDate(event.target.value)} required /></label>
+          <label className={styles.registerSearch}><span>Search</span><input type="search" value={evidenceSearch} onChange={(event) => setEvidenceSearch(event.target.value)} placeholder="Transaction, vendor, number, or file" /></label>
+          <label><span>Status</span><select value={evidenceStateFilter} onChange={(event) => setEvidenceStateFilter(event.target.value as EvidenceRegisterState | 'ALL')}>
+            <option value="ALL">All statuses</option>
+            {(['MATCHED', 'MISSING', 'REVIEW_REQUIRED', 'WRONG_MATCHED'] as const).map((state) => <option key={state} value={state}>{stateLabels[state]}</option>)}
+          </select></label>
+          <label><span>Sort by</span><select value={evidenceSort} onChange={(event) => setEvidenceSort(event.target.value as EvidenceRegisterSort)}>
+            <option value="date_desc">Newest date</option><option value="date_asc">Oldest date</option><option value="amount_desc">Highest amount</option><option value="vendor_asc">Name A–Z</option>
+          </select></label>
+          <button type="submit" className={styles.btn + ' ' + styles.btnPrimary} disabled={connectionStatus !== 'connected' || evidenceLoading || !realmId}>{evidenceLoading ? 'Loading…' : 'Load register'}</button>
+        </form>
+
+        {connectionStatus !== 'connected' ? <p className={styles.activityEmpty}>Connect QuickBooks to load this company’s evidence register.</p> : null}
+        {evidenceError ? <p className={styles.activityError} role="alert">{evidenceError}</p> : null}
+
+        {evidenceRows.length > 0 ? (
+          <>
+            <div className={styles.registerStateCounts} aria-label="Evidence register totals">
+              {(['MATCHED', 'MISSING', 'REVIEW_REQUIRED', 'WRONG_MATCHED'] as const).map((state) => (
+                <button type="button" key={state} className={evidenceStateFilter === state ? styles.registerCountActive : styles.registerCount} onClick={() => setEvidenceStateFilter(evidenceStateFilter === state ? 'ALL' : state)} aria-pressed={evidenceStateFilter === state}>
+                  <strong>{counts[state]}</strong><span>{stateLabels[state]}</span>
+                </button>
+              ))}
+            </div>
+            <p className={styles.activitySummary} role="status">Showing {visibleRows.length} of {evidenceRows.length} register rows</p>
+            {visibleRows.length ? (
+              <div className={styles.activityTableWrap}>
+                <table className={styles.registerTable}>
+                  <thead><tr><th>Date</th><th>Status</th><th>Transaction</th><th>Number</th><th>Name</th><th>Amount</th><th>Evidence</th><th>QuickBooks</th></tr></thead>
+                  <tbody>{visibleRows.map((row, index) => {
+                    const qboUrl = buildQboTransactionUrl(row.qboTxnType ?? null, row.qboTxnId ?? row.attachedQboTxnId ?? null);
+                    return <tr key={String(row.id ?? `${row.qboTxnId ?? 'unlinked'}-${row.matchedDocumentId ?? index}`)} className={styles.registerRow} onClick={() => setSelectedEvidenceRow(row)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedEvidenceRow(row); }}>
+                      <td>{row.qboTxnDate || '—'}</td>
+                      <td><span className={`${styles.registerStatus} ${styles[`registerStatus_${row.registerState}`]}`}>{stateLabels[row.registerState]}</span></td>
+                      <td>{row.qboTxnType || (row.qboTxnId ? 'Transaction' : 'Unlinked document')}</td>
+                      <td>{row.qboTxnDocNumber || '—'}</td>
+                      <td>{row.qboTxnVendor || '—'}</td>
+                      <td>{row.qboTxnAmount == null ? '—' : `${company?.CompanyInfo?.Currency ? `${company.CompanyInfo.Currency} ` : ''}${row.qboTxnAmount.toLocaleString()}`}</td>
+                      <td>{row.attachmentFilename || 'No document'}</td>
+                      <td>{qboUrl ? <a className={styles.activityQboLink} href={qboUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>Open transaction ↗</a> : '—'}</td>
+                    </tr>;
+                  })}</tbody>
+                </table>
+              </div>
+            ) : <p className={styles.activityEmpty}>No rows match these filters.</p>}
+            {selectedEvidenceRow ? <aside className={styles.evidenceDrawer} aria-label="Transaction details">
+              <div className={styles.evidenceDrawerHeader}><div><span className={styles.homeEyebrow}>TRANSACTION DETAILS</span><h3>{selectedEvidenceRow.qboTxnVendor || selectedEvidenceRow.qboTxnType || 'Evidence item'}</h3></div><button type="button" className={styles.btn + ' ' + styles.btnGhost} aria-label="Close details" onClick={() => setSelectedEvidenceRow(null)}>×</button></div>
+              <dl><div><dt>Status</dt><dd><span className={`${styles.registerStatus} ${styles[`registerStatus_${selectedEvidenceRow.registerState}`]}`}>{stateLabels[selectedEvidenceRow.registerState]}</span></dd></div><div><dt>Transaction</dt><dd>{selectedEvidenceRow.qboTxnType || '—'} {selectedEvidenceRow.qboTxnDocNumber || ''}</dd></div><div><dt>Date</dt><dd>{selectedEvidenceRow.qboTxnDate || '—'}</dd></div><div><dt>Amount</dt><dd>{selectedEvidenceRow.qboTxnAmount == null ? '—' : selectedEvidenceRow.qboTxnAmount.toLocaleString()}</dd></div><div><dt>Evidence</dt><dd>{selectedEvidenceRow.attachmentFilename || 'No document attached'}</dd></div></dl>
+              <div className={styles.evidenceDrawerActions}><button type="button" className={styles.btn + ' ' + styles.btnPrimary} onClick={() => window.location.assign('/documents')}>Upload document</button>{buildQboTransactionUrl(selectedEvidenceRow.qboTxnType ?? null, selectedEvidenceRow.qboTxnId ?? selectedEvidenceRow.attachedQboTxnId ?? null) ? <a className={styles.btn + ' ' + styles.btnSecondary} href={buildQboTransactionUrl(selectedEvidenceRow.qboTxnType ?? null, selectedEvidenceRow.qboTxnId ?? selectedEvidenceRow.attachedQboTxnId ?? null) ?? '#'} target="_blank" rel="noopener noreferrer">Open in QuickBooks ↗</a> : null}</div>
+            </aside> : null}
+          </>
+        ) : !evidenceLoading && connectionStatus === 'connected' && !evidenceError ? <p className={styles.activityEmpty}>Choose a date range and load the register.</p> : null}
+      </section>
+    );
+  };
+
+  const renderEvidenceRequirements = () => {
+    const statusLabel: Record<RequirementEvaluation['status'], string> = {
+      satisfied: 'Satisfied',
+      missing: 'Missing',
+      review_required: 'Needs review',
+      unknown: 'Unknown',
+      not_applicable: 'Not applicable',
+      not_configured: 'No rules configured',
+    };
+
+    return (
+      <>
+        <section className={styles.card} aria-labelledby="evidence-rules-title">
+          <div className={styles.registerHeading}>
+            <div>
+              <h2 id="evidence-rules-title" className={styles.cardTitle}>Evidence rules</h2>
+              <p className={styles.activityDescription}>Set the documents your team expects for selected transaction types and amount ranges. Zevidt does not add default accounting requirements.</p>
+            </div>
+            <button type="button" className={styles.btn + ' ' + styles.btnSecondary} onClick={() => void loadEvidenceRules()} disabled={requirementsLoading}>
+              {requirementsLoading ? 'Loading…' : 'Refresh rules'}
+            </button>
+          </div>
+          {authStatus !== 'signed_in' && <p className={styles.activityWarning}>Sign in to view or manage this company’s evidence rules.</p>}
+          {requirementsError && <p className={styles.activityError} role="alert">{requirementsError}</p>}
+          {requirementsNotice && <p className={styles.activityEmpty} role="status">{requirementsNotice}</p>}
+
+          <form className={styles.requirementForm} onSubmit={createEvidenceRule}>
+            <label><span>Rule name</span><input value={ruleName} onChange={(event) => setRuleName(event.target.value)} maxLength={120} required placeholder="Example: Large vendor bill" /></label>
+            <label><span>Transaction type</span><input value={ruleTransactionType} onChange={(event) => setRuleTransactionType(event.target.value)} pattern="[A-Za-z][A-Za-z0-9]{0,63}" required placeholder="Bill" /></label>
+            <label><span>Minimum amount (optional)</span><input type="number" min="0" step="0.01" value={ruleAmountMin} onChange={(event) => setRuleAmountMin(event.target.value)} /></label>
+            <label><span>Maximum amount (optional)</span><input type="number" min="0" step="0.01" value={ruleAmountMax} onChange={(event) => setRuleAmountMax(event.target.value)} /></label>
+            <label><span>Document type</span><input value={ruleDocumentType} onChange={(event) => setRuleDocumentType(event.target.value)} pattern="[A-Za-z0-9]+([ _-][A-Za-z0-9]+)*" required placeholder="invoice" /></label>
+            <button type="submit" className={styles.btn + ' ' + styles.btnPrimary} disabled={requirementsSaving || authStatus !== 'signed_in'}>{requirementsSaving ? 'Saving…' : 'Add rule'}</button>
+          </form>
+
+          {requirementRules.length === 0 && !requirementsLoading ? (
+            <p className={styles.activityEmpty}>No rules yet. Add a rule only when your team has decided what it expects.</p>
+          ) : (
+            <div className={styles.requirementList}>
+              {requirementRules.map((rule) => (
+                <article className={styles.requirementItem} key={rule.id}>
+                  <div>
+                    <strong>{rule.name}</strong>
+                    <span>{rule.transaction_type} · {rule.document_type} · {rule.amount_min ?? 'Any'} to {rule.amount_max ?? 'Any'}</span>
+                  </div>
+                  <button type="button" className={styles.btn + ' ' + styles.btnSecondary} onClick={() => void toggleEvidenceRule(rule)} disabled={authStatus !== 'signed_in'} aria-pressed={rule.is_active}>
+                    {rule.is_active ? 'Active — turn off' : 'Inactive — turn on'}
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className={styles.card} aria-labelledby="requirement-check-title">
+          <div className={styles.registerHeading}>
+            <div>
+              <h2 id="requirement-check-title" className={styles.cardTitle}>Check transactions</h2>
+              <p className={styles.activityDescription}>Evaluate saved rules against the cached evidence register and document classifications. This does not fetch from QuickBooks or change transaction data.</p>
+            </div>
+          </div>
+          <div className={styles.requirementEvaluate}>
+            <label><span>From</span><input type="date" value={registerStartDate} onChange={(event) => setRegisterStartDate(event.target.value)} /></label>
+            <label><span>To</span><input type="date" value={registerEndDate} onChange={(event) => setRegisterEndDate(event.target.value)} /></label>
+            <button type="button" className={styles.btn + ' ' + styles.btnPrimary} onClick={() => void evaluateEvidenceRules()} disabled={requirementsLoading || authStatus !== 'signed_in'}>{requirementsLoading ? 'Checking…' : 'Evaluate rules'}</button>
+          </div>
+          {requirementRows.length > 0 && <div className={styles.requirementResults}>
+            {requirementRows.map((row) => (
+              <article className={styles.requirementItem} key={row.transaction.txnId}>
+                <div>
+                  <strong>{row.transaction.docNumber || row.transaction.txnId} · {row.transaction.vendor || row.transaction.txnType || 'Transaction'}</strong>
+                  <span>{row.transaction.date || 'Date unavailable'} · {row.transaction.amount === null ? 'Amount unavailable' : row.transaction.amount.toLocaleString()}</span>
+                  {row.checks.map((check) => <span key={check.ruleId}>{check.ruleName}: {statusLabel[check.status as RequirementEvaluation['status']]} ({check.evidenceCount} qualifying file{check.evidenceCount === 1 ? '' : 's'})</span>)}
+                </div>
+                <span className={styles.requirementStatus}>{statusLabel[row.status]}</span>
+              </article>
+            ))}
+          </div>}
+        </section>
+      </>
+    );
+  };
 
   const [missingTransactions, setMissingTransactions] = useState<RegisterEntry[]>([]);
   const [fetchingMissing, setFetchingMissing] = useState(false);
@@ -1608,6 +1861,8 @@ export default function QuickbooksPage() {
         return renderMissing();
       case 'attachments':
         return renderAttachments();
+      case 'requirements':
+        return renderEvidenceRequirements();
       default:
         return renderOverview();
     }
@@ -1616,24 +1871,10 @@ export default function QuickbooksPage() {
   return (
     <div className={styles.container}>
       <WorkspaceHeader
-        activeSection={activeSection}
-        onSelectSection={(section) => setActiveSection(section)}
+        activeSection={activeSection === 'requirements' ? undefined : activeSection}
+        onSelectSection={selectWorkspaceSection}
       />
       <main className={styles.main} role="main">
-        <nav className={styles.sectionTabs} aria-label="Workspace views">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`${styles.sectionTab} ${activeSection === item.id ? styles.sectionTabActive : ''}`}
-              onClick={() => setActiveSection(item.id)}
-              aria-current={activeSection === item.id ? 'page' : undefined}
-            >
-              <span className={styles.navIcon}>{item.icon}</span>
-              <span>{getSectionLabel(item.id, financeMode)}</span>
-            </button>
-          ))}
-        </nav>
         <header className={styles.header}>
           <div className={styles.headerLeft}>
             <h1 className={styles.pageTitle}>
@@ -1660,7 +1901,7 @@ export default function QuickbooksPage() {
         </header>
 
         {/* Connection error alert */}
-        {connectionError && connectionStatus !== 'connected' && (
+        {connectionError && connectionStatus !== 'connected' && authStatus !== 'signed_out' && (
           <div className={styles.alert + ' ' + styles.alertError} role="alert">
             <AlertIcon />
             <strong>Connection Error:</strong> {connectionError}

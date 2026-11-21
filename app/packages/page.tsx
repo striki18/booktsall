@@ -90,7 +90,7 @@ export default function PackageHistoryPage() {
             <h1 className="mt-3 text-3xl font-semibold">{financeMode ? 'Evidence package history' : 'Past reports and packages'}</h1>
             <p className="mt-2 text-sm leading-6 text-[#5d6675]">{financeMode ? 'Find a past package, check what it contains, and download it again.' : 'Open a past report, see what went into it, or download it again.'}</p>
           </div>
-          <button type="button" onClick={() => void loadHistory()} disabled={loading} className="h-10 rounded bg-[#243b53] px-4 font-semibold text-white disabled:opacity-60">{loading ? 'Loading…' : 'Refresh history'}</button>
+          <div className="flex flex-wrap gap-2"><button type="button" onClick={() => window.location.assign('/quickbooks?section=generate')} className="h-11 rounded-lg bg-[#3e6ae1] px-4 font-semibold text-white shadow-sm hover:bg-[#3159c9]">Create package</button><button type="button" onClick={() => void loadHistory()} disabled={loading} className="h-11 rounded-lg border border-[#cfd4dc] bg-white px-4 font-semibold text-[#171a20] hover:border-[#3e6ae1] disabled:opacity-60">{loading ? 'Loading…' : 'Refresh'}</button></div>
         </header>
 
         {error ? <p role="alert" className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</p> : null}
@@ -110,7 +110,7 @@ export default function PackageHistoryPage() {
                 {item.previous_package_id ? <p className="mt-1 text-xs text-[#5d6675]">Previous version: {item.previous_package_id}</p> : null}
                 {item.error_summary ? <p className="mt-2 text-sm text-amber-900">{item.error_summary}</p> : null}
               </div>
-              <button type="button" disabled={!canDownload(item) || downloadingId === item.id} onClick={() => void downloadPackage(item)} className="h-10 rounded border border-[#c8ced8] px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50">{downloadingId === item.id ? 'Preparing…' : 'Download ZIP'}</button>
+              <button type="button" disabled={!canDownload(item) || downloadingId === item.id} onClick={() => void downloadPackage(item)} className="h-11 rounded-lg border border-[#c8ced8] bg-white px-4 text-sm font-semibold text-[#171a20] hover:border-[#3e6ae1] hover:text-[#3159c9] disabled:cursor-not-allowed disabled:opacity-50">{downloadingId === item.id ? 'Preparing…' : 'Download ZIP'}</button>
             </article>
           ))}
         </div>

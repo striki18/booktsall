@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetText = vi.fn();
+const mockDestroy = vi.fn(async () => {});
 vi.mock('../lib/supabase-admin', () => ({ supabaseAdmin: { from: vi.fn() } }));
 vi.mock('pdf-parse', () => ({
-  PDFParse: class { getText() { return mockGetText(); } },
+  PDFParse: class { getText(options?: unknown) { return mockGetText(options); } destroy() { return mockDestroy(); } },
 }));
 
 import { configureOcrEngine, configureOcrEngines, extractTextFromDocument } from '../lib/document-extraction';
@@ -14,6 +15,11 @@ afterEach(() => {
 });
 
 describe('configurable OCR extraction', () => {
+  it('releases the PDF worker after successful text extraction', async () => {
+    mockGetText.mockResolvedValue({ text: 'Readable invoice text' });
+    await expect(extractTextFromDocument(Buffer.from('pdf'), 'application/pdf')).resolves.toBe('Readable invoice text');
+    expect(mockDestroy).toHaveBeenCalledOnce();
+  });
   it('sends images to the configured engine and returns its text', async () => {
     const recognize = vi.fn().mockResolvedValue('ACME RECEIPT TOTAL 12.00');
     configureOcrEngine({ recognize });
@@ -28,6 +34,27 @@ describe('configurable OCR extraction', () => {
     configureOcrEngine({ recognize });
     const buffer = Buffer.from('scanned-pdf');
     await expect(extractTextFromDocument(buffer, 'application/pdf')).resolves.toBe('Scanned invoice 55.00');
+    expect(recognize).toHaveBeenCalledWith({ buffer, contentType: 'application/pdf' });
+  });
+
+  it('does not treat parser-generated page-number footers as scanned document text', async () => {
+    mockGetText.mockImplementation(async (options?: { pageJoiner?: string }) => ({
+      text: options?.pageJoiner === '' ? '\n\n' : '\n\n-- 1 of 1 --\n\n',
+    }));
+    const recognize = vi.fn().mockResolvedValue('Scanned invoice ZV-2026-001 total 125.00');
+    configureOcrEngine({ name: 'Tesseract', recognize });
+    await expect(extractTextFromDocument(Buffer.from('scanned-pdf'), 'application/pdf'))
+      .resolves.toBe('Scanned invoice ZV-2026-001 total 125.00');
+    expect(mockGetText).toHaveBeenCalledWith({ pageJoiner: '' });
+    expect(recognize).toHaveBeenCalledOnce();
+  });
+  it('falls back to OCR when embedded-text PDF parsing fails', async () => {
+    mockGetText.mockRejectedValue(new Error('PDF parser failure'));
+    const recognize = vi.fn().mockResolvedValue('Scanned bill 81.00');
+    configureOcrEngine({ recognize });
+    const buffer = Buffer.from('scan-pdf');
+
+    await expect(extractTextFromDocument(buffer, 'application/pdf')).resolves.toBe('Scanned bill 81.00');
     expect(recognize).toHaveBeenCalledWith({ buffer, contentType: 'application/pdf' });
   });
 

@@ -7,11 +7,19 @@
 
 import { supabaseAdmin } from './supabase-admin';
 import { PDFParse } from 'pdf-parse';
+import { createLocalOcrEngines } from './local-ocr-engines';
+import { createHash } from 'node:crypto';
+import { qboTransactionEntityType } from './qbo-transaction-types';
 
 async function extractPdfText(buffer: Buffer): Promise<string> {
   const parser = new PDFParse({ data: buffer });
-  const result = await parser.getText();
-  return result.text;
+  // Page-number footers are parser metadata, not embedded document text.
+  try {
+    const result = await parser.getText({ pageJoiner: '' });
+    return result.text;
+  } finally {
+    await parser.destroy();
+  }
 }
 
 export interface ExtractedDocumentFields {
@@ -39,6 +47,8 @@ export interface FieldComparisonDetail {
   match: boolean;
   similarity?: number; // For vendor name (Jaccard similarity)
   difference?: number; // For amount/date (absolute difference)
+  normalizedTransactionValue?: number;
+  normalization?: 'qbo_purchase_report_sign';
 }
 
 export interface CandidateMatchDetail {
@@ -106,8 +116,7 @@ export async function getClaimedTransactionIds(realmId: string): Promise<Set<str
     .not('matched_transaction_id', 'is', null);
 
   if (error) {
-    console.error('Failed to fetch claimed transaction IDs:', error.message);
-    return claimed;
+    throw new Error('Could not verify transactions with existing evidence');
   }
 
   for (const doc of matchedDocs || []) {
@@ -124,6 +133,12 @@ export async function getClaimedTransactionIds(realmId: string): Promise<Set<str
  * Avoids Set iteration for ES2017 target compatibility
  */
 function stringSimilarity(a: string, b: string): number {
+  const normalizeVendorText = (value: string) => value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[\u2018\u2019\u201a\u201b\u2032]/g, "'");
+  a = normalizeVendorText(a);
+  b = normalizeVendorText(b);
   const bigramsA: string[] = [];
   const bigramsB: string[] = [];
 
@@ -167,7 +182,7 @@ export interface OcrEngine {
   recognize(input: { buffer: Buffer; contentType: string }): Promise<string>;
 }
 
-let configuredOcrEngines: readonly OcrEngine[] = [];
+let configuredOcrEngines: readonly OcrEngine[] = createLocalOcrEngines();
 
 /** Configure an ordered OCR fallback chain. Existing callers can still set one engine. */
 export function configureOcrEngine(engine: OcrEngine | null) {
@@ -200,8 +215,18 @@ async function extractWithOcr(buffer: Buffer, contentType: string): Promise<stri
 }
 export async function extractTextFromDocument(buffer: Buffer, contentType: string): Promise<string> {
   if (contentType === 'application/pdf') {
-    const text = await extractPdfText(buffer);
-    return text.trim() ? text : extractWithOcr(buffer, contentType);
+    try {
+      const text = await extractPdfText(buffer);
+      if (text.trim()) return text;
+    } catch (error) {
+      // A PDF parser failure must not prevent the configured OCR chain from
+      // attempting a scan. If OCR also fails, its explicit error reaches the
+      // caller so the document can be marked for review.
+      console.warn('Embedded PDF text extraction failed; attempting local OCR', {
+        category: error instanceof Error && /worker|module|protocol|url/i.test(error.message) ? 'worker_configuration' : 'pdf_parse',
+      });
+    }
+    return extractWithOcr(buffer, contentType);
   }
 
   if (contentType.startsWith('image/')) {
@@ -309,9 +334,9 @@ export function extractFieldsFromText(text: string): ExtractedDocumentFields {
 
   // Document/Invoice number patterns
   const docNumberPatterns = [
-    /(?:invoice\s*(?:#|no|number)|bill\s*(?:#|no|number)|document\s*(?:#|no|number)|ref|reference):\s*([A-Za-z0-9\-\/]+)/i,
-    /(?:inv|bill|doc)\b[\s\-]?#?\s*:?\s*([A-Za-z0-9\-\/]{3,})/i,
-    /\b(INV|BILL|DOC|INVOICE)[\-\/]?([A-Za-z0-9]{3,})\b/i,
+    /\b(?:invoice|bill|document|ref(?:erence)?)(?:[ \t]*(?:#|no\.?|number))?[ \t]*:[ \t]*([A-Za-z0-9\-\/]+)/i,
+    /\b((?:INVOICE|INV|BILL|DOC)[\-\/]?[A-Za-z0-9]*\d[A-Za-z0-9\-\/]*)\b/i,
+    /\b(?:inv|bill|doc)\b[ \t\-]?#?[ \t]*:?[ \t]*([A-Za-z0-9\-\/]{3,})/i,
   ];
 
   for (const pattern of docNumberPatterns) {
@@ -406,7 +431,8 @@ export async function downloadDocument(storagePath: string): Promise<Buffer> {
  * Fetches real transaction data from qbo_evidence_register by qbo_txn_id and realm_id
  */
 export async function getCollectionRequestWithTransactions(
-  collectionRequestId: string
+  collectionRequestId: string,
+  includeMatchedTransactions = false
 ): Promise<CollectionRequestWithTransactions | null> {
   const { data: request, error } = await supabaseAdmin
     .from('collection_requests')
@@ -414,7 +440,8 @@ export async function getCollectionRequestWithTransactions(
     .eq('id', collectionRequestId)
     .single();
 
-  if (error || !request) {
+  if (error) throw new Error('Could not load the collection request for document matching');
+  if (!request) {
     return null;
   }
 
@@ -430,22 +457,29 @@ export async function getCollectionRequestWithTransactions(
     };
   }
 
-  // Fetch real transaction data from qbo_evidence_register
-  // Exclude MATCHED transactions - they are already resolved and should not be candidates
-  const { data: registerRows, error: regError } = await supabaseAdmin
+  // Fetch real transaction data from qbo_evidence_register. Public inbox uploads
+  // include matched rows so later certain documents can be classified as additional evidence.
+  let registerQuery = supabaseAdmin
     .from('qbo_evidence_register')
     .select('qbo_txn_id, qbo_txn_type, qbo_txn_date, qbo_txn_vendor, qbo_txn_amount, qbo_txn_doc_number, register_state')
     .eq('realm_id', realmId)
-    .in('qbo_txn_id', transactionIds)
-    .neq('register_state', 'MATCHED');
+    .in('qbo_txn_id', transactionIds);
+  if (!includeMatchedTransactions) registerQuery = registerQuery.neq('register_state', 'MATCHED');
+  const { data: registerRows, error: regError } = await registerQuery;
 
   if (regError) {
-    console.error('Failed to fetch register rows:', regError.message);
-    return null;
+    throw new Error('Could not load transaction data for document matching');
   }
 
   // Build a map for quick lookup
-  const registerMap = new Map<string, any>();
+  const registerMap = new Map<string, {
+    qbo_txn_id: string;
+    qbo_txn_type: string | null;
+    qbo_txn_date: string | null;
+    qbo_txn_vendor: string | null;
+    qbo_txn_amount: number | null;
+    qbo_txn_doc_number: string | null;
+  }>();
   for (const row of registerRows || []) {
     registerMap.set(row.qbo_txn_id, row);
   }
@@ -521,7 +555,12 @@ export function calculateMatchConfidence(
 
   // Amount match (30 points) - exact match within 0.01
   if (docFields.totalAmount !== null && transaction.amount !== null) {
-    const difference = Math.abs(docFields.totalAmount - transaction.amount);
+    // TransactionList expresses outgoing purchases as negative, while the
+    // Purchase entity and supporting receipt use a positive TotalAmt.
+    const normalizePurchaseSign = transaction.amount < 0 &&
+      qboTransactionEntityType(transaction.txnType ?? '') === 'Purchase';
+    const comparisonAmount = normalizePurchaseSign ? Math.abs(transaction.amount) : transaction.amount;
+    const difference = Math.abs(docFields.totalAmount - comparisonAmount);
     const match = difference < 0.01;
     if (match) {
       signals.amountMatch = true;
@@ -533,6 +572,7 @@ export function calculateMatchConfidence(
       fieldName: 'totalAmount',
       documentValue: docFields.totalAmount,
       transactionValue: transaction.amount,
+      ...(normalizePurchaseSign ? { normalizedTransactionValue: comparisonAmount, normalization: 'qbo_purchase_report_sign' as const } : {}),
       match,
       difference,
     });
@@ -617,7 +657,8 @@ export async function matchDocumentToTransactions(
   collectionRequestId: string | undefined,
   transactions?: QBOTransaction[],
   realmId?: string,
-  claimedTransactionIds: Set<string> = new Set()
+  claimedTransactionIds: Set<string> = new Set(),
+  allowClaimedTransactionMatch = false
 ): Promise<MatchResult> {
   let txns = transactions;
 
@@ -639,7 +680,7 @@ export async function matchDocumentToTransactions(
       };
     }
 
-    const request = await getCollectionRequestWithTransactions(collectionRequestId);
+    const request = await getCollectionRequestWithTransactions(collectionRequestId, allowClaimedTransactionMatch);
 
     if (!request || request.transactions.length === 0) {
       return {
@@ -656,10 +697,14 @@ export async function matchDocumentToTransactions(
       };
     }
 
-    // Filter out transactions already claimed by previously matched documents
-    // so this document is evaluated only against the remaining unresolved ones.
-    const claimedIds = await getClaimedTransactionIds(request.realmId);
-    txns = request.transactions.filter(txn => !claimedIds.has(txn.txnId));
+    // Normal discovery excludes already-claimed transactions. Public inbox processing
+    // explicitly includes them so a certain subsequent document can become additional evidence.
+    if (allowClaimedTransactionMatch) {
+      txns = request.transactions;
+    } else {
+      const claimedIds = await getClaimedTransactionIds(request.realmId);
+      txns = request.transactions.filter(txn => !claimedIds.has(txn.txnId));
+    }
   }
   // If transactions ARE provided, they are assumed to be pre-filtered already
   // (i.e., claimed transactions already removed). Do NOT call getClaimedTransactionIds again.
@@ -707,7 +752,7 @@ export async function matchDocumentToTransactions(
     signals: r.signals,
   }));
 
-  if (bestMatch.confidence >= 90 && highConfidenceCount === 1 && !claimedTransactionIds.has(bestMatch.transaction.txnId)) {
+  if (bestMatch.confidence >= 90 && highConfidenceCount === 1 && (allowClaimedTransactionMatch || !claimedTransactionIds.has(bestMatch.transaction.txnId))) {
     return {
       documentId,
       transactionId: bestMatch.transaction.txnId,
@@ -775,22 +820,30 @@ export function hasStrongDuplicateMatch(
   return shared.length >= 3 || (sharedDocumentNumber && shared.length >= 2);
 }
 
-async function checkForDuplicateDocument(
+export async function checkForDuplicateDocument(
   realmId: string,
   fields: ExtractedDocumentFields,
-  currentDocumentId: string
+  currentDocumentId: string,
+  currentBytes: Buffer,
 ): Promise<string | null> {
   const { data: existingDocs, error } = await supabaseAdmin
     .from('inbox_documents')
-    .select('id, extracted_vendor, extracted_amount, extracted_date, extracted_document_number')
+    .select('id, storage_path, extracted_vendor, extracted_amount, extracted_date, extracted_document_number')
     .eq('realm_id', realmId)
     .not('id', 'eq', currentDocumentId)
     .not('processed_at', 'is', null);
 
-  if (error || !existingDocs) return null;
+  if (error) throw new Error('Could not verify existing documents for duplicate detection');
+  if (!existingDocs) return null;
 
+  const currentHash = createHash('sha256').update(currentBytes).digest('hex');
   for (const doc of existingDocs) {
-    if (hasStrongDuplicateMatch(fields, doc)) return doc.id;
+    // Matching invoice metadata identifies candidates, not identical documents:
+    // a receipt and a delivery note can legitimately share every field.
+    if (!hasStrongDuplicateMatch(fields, doc)) continue;
+    if (!doc.storage_path) throw new Error('Duplicate candidate has no verifiable stored file');
+    const priorBytes = await downloadDocument(doc.storage_path);
+    if (createHash('sha256').update(priorBytes).digest('hex') === currentHash) return doc.id;
   }
   return null;
 }
@@ -808,6 +861,7 @@ export async function processInboxDocument(
     .from('inbox_documents')
     .select('*')
     .eq('id', documentId)
+    .is('archived_at', null)
     .single();
 
   if (docError || !document) {
@@ -824,7 +878,7 @@ export async function processInboxDocument(
   const fields = extractFieldsFromText(text);
 
   // 5. Check for duplicate document in the same realm
-  const duplicateOfDocumentId = await checkForDuplicateDocument(document.realm_id, fields, documentId);
+  const duplicateOfDocumentId = await checkForDuplicateDocument(document.realm_id, fields, documentId, buffer);
 
   // 6. If duplicate, return early with duplicate flag
   if (duplicateOfDocumentId) {
@@ -868,7 +922,15 @@ export async function processInboxDocument(
   }
 
   // 7. Match against collection request transactions
-  const matchResult = await matchDocumentToTransactions(documentId, fields, collectionRequestId);
+  const matchResult = await matchDocumentToTransactions(
+    documentId,
+    fields,
+    collectionRequestId,
+    undefined,
+    document.realm_id,
+    new Set(),
+    true
+  );
 
   // 8. Store match result in database (extend inbox_documents or create new table)
   await supabaseAdmin
@@ -919,7 +981,8 @@ export async function processCollectionRequestDocuments(
     .from('inbox_documents')
     .select('*')
     .eq('realm_id', request.realm_id)
-    .is('processed_at', null); // Only unprocessed documents
+    .is('processed_at', null)
+    .is('archived_at', null); // Only unprocessed, active inbox documents
 
   if (error) {
     throw new Error(`Failed to fetch documents: ${error.message}`);

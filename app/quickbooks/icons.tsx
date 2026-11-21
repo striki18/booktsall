@@ -5,9 +5,10 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { supabaseBrowser } from '@/lib/supabase-browser';
 
 type WorkspaceSection = 'overview' | 'generate' | 'evidence' | 'missing' | 'attachments';
-type WorkspacePanel = 'work' | 'packages' | null;
+type WorkspacePanel = 'work' | 'packages' | 'profile' | null;
 type QboConnectionState = 'checking' | 'connected' | 'needs_connection' | 'signed_out' | 'unavailable';
 export type WordingMode = 'general' | 'finance';
 
@@ -60,6 +61,8 @@ export function WorkspaceHeader({
 }) {
   const pathname = usePathname();
   const [panel, setPanel] = useState<WorkspacePanel>(null);
+  const [signingOut, setSigningOut] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [qboConnectionState, setQboConnectionState] = useState<QboConnectionState>('checking');
   const { wording, setWording } = useWordingMode();
   const financeMode = wording === 'finance';
@@ -81,11 +84,33 @@ export function WorkspaceHeader({
     return () => { active = false; };
   }, [pathname]);
 
+  useEffect(() => {
+    if (!panel) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPanel(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [panel]);
+
   function connectQuickBooks() {
     if (qboConnectionState === 'signed_out') {
       window.location.assign('/login');
     } else if (qboConnectionState === 'needs_connection') {
       window.location.assign('/api/auth/intuit');
+    }
+  }
+
+  async function signOut() {
+    setSigningOut(true);
+    setSessionError(null);
+    try {
+      const { error } = await supabaseBrowser.auth.signOut({ scope: 'local' });
+      if (error) throw error;
+      window.location.replace('/login');
+    } catch {
+      setSessionError('Unable to sign out. Please try again.');
+      setSigningOut(false);
     }
   }
 
@@ -102,8 +127,8 @@ export function WorkspaceHeader({
     <>
       <header className="workspaceTopbar">
         <Link href="/quickbooks" className="workspaceBrand" aria-label="Zevidt home">
-          <span className="workspaceBrandMark" aria-hidden="true">z</span>
-          <span>zevidt</span>
+          <span className="workspaceBrandMark" aria-hidden="true">Z</span>
+          <span className="workspaceBrandWord">ZEVIDT</span>
         </Link>
 
         <nav className="workspacePrimaryNav" aria-label="Primary navigation">
@@ -116,31 +141,25 @@ export function WorkspaceHeader({
           }}>Home</Link>
           <Link href="/documents" className={pathname === '/documents' ? 'isCurrent' : ''}>{financeMode ? 'Documents' : 'Inbox'}</Link>
           <button type="button" aria-expanded={panel === 'work'} onClick={() => setPanel(panel === 'work' ? null : 'work')}>
-            {financeMode ? 'Transactions' : 'Work'} <span aria-hidden="true">⌄</span>
+            Transactions
           </button>
           <Link href="/review" className={pathname === '/review' ? 'isCurrent' : ''}>{financeMode ? 'Evidence review' : 'Needs a look'}</Link>
           <button type="button" aria-expanded={panel === 'packages'} onClick={() => setPanel(panel === 'packages' ? null : 'packages')}>
-            Packages <span aria-hidden="true">⌄</span>
+            Packages
           </button>
         </nav>
 
         <div className="workspaceTopbarActions">
-          {isHomeOverview && qboConnectionState !== 'connected' ? (
-            <button
-              type="button"
-              className="workspaceConnectButton"
-              onClick={connectQuickBooks}
-              disabled={qboConnectionState === 'checking' || qboConnectionState === 'unavailable'}
-            >
-              {qboConnectionState === 'checking' ? 'Checking connection…' : qboConnectionState === 'signed_out' ? 'Sign in to connect' : qboConnectionState === 'unavailable' ? 'Connection unavailable' : 'Connect QuickBooks'}
-            </button>
-          ) : null}
           <div className="wordingToggle" role="group" aria-label="Language">
             <button type="button" aria-pressed={!financeMode} onClick={() => setWording('general')}>General</button>
             <button type="button" aria-pressed={financeMode} onClick={() => setWording('finance')}>Finance</button>
           </div>
+          {qboConnectionState !== 'signed_out' ? (
+            <button type="button" className="workspaceProfileButton" aria-label="Open profile menu" aria-expanded={panel === 'profile'} onClick={() => setPanel(panel === 'profile' ? null : 'profile')}>Z</button>
+          ) : null}
         </div>
       </header>
+      {sessionError ? <p role="alert" className="px-6 py-2 text-sm text-red-700">{sessionError}</p> : null}
 
       {!isHomeOverview && qboConnectionState !== 'connected' && qboConnectionState !== 'checking' && qboConnectionState !== 'unavailable' ? (
         <div className="workspaceConnectPrompt" role="status">
@@ -157,11 +176,11 @@ export function WorkspaceHeader({
       {panel ? (
         <>
           <button type="button" className="workspacePanelScrim" aria-label="Close menu" onClick={() => setPanel(null)} />
-          <aside className="workspaceSidePanel" aria-label={panel === 'work' ? 'Work menu' : 'Package menu'}>
+          <aside className="workspaceSidePanel" aria-label={panel === 'work' ? 'Transaction menu' : panel === 'packages' ? 'Package menu' : 'Profile menu'}>
             <div className="workspacePanelHeading">
               <div>
-                <p>{panel === 'work' ? 'YOUR WORKSPACE' : 'EXPORTS & AUDITS'}</p>
-                <h2>{panel === 'work' ? (financeMode ? 'Transactions' : 'Your work') : 'Packages'}</h2>
+                <p>{panel === 'work' ? 'TRANSACTIONS' : panel === 'packages' ? 'EXPORTS & AUDITS' : 'ACCOUNT'}</p>
+                <h2>{panel === 'work' ? 'Transactions' : panel === 'packages' ? 'Packages' : 'Profile'}</h2>
               </div>
               <button type="button" aria-label="Close menu" onClick={() => setPanel(null)}>×</button>
             </div>
@@ -174,10 +193,17 @@ export function WorkspaceHeader({
                 ))}
                 <Link href="/firm/inbox" onClick={() => setPanel(null)}>{financeMode ? 'Collection requests' : 'Client requests'}<span aria-hidden="true">→</span></Link>
               </div>
-            ) : (
+            ) : panel === 'packages' ? (
               <div className="workspacePanelLinks">
+                <button type="button" onClick={() => openSection('generate')}>Create package<span aria-hidden="true">→</span></button>
                 <Link href="/packages" onClick={() => setPanel(null)}>Package history<span aria-hidden="true">→</span></Link>
                 <Link href="/audit-packages" onClick={() => setPanel(null)}>Audit packages<span aria-hidden="true">→</span></Link>
+                <button type="button" onClick={() => openSection('attachments')}>QuickBooks files<span aria-hidden="true">→</span></button>
+              </div>
+            ) : (
+              <div className="workspacePanelLinks">
+                <button type="button" onClick={() => { setPanel(null); window.location.assign('/quickbooks?settings=integrations'); }}>Settings & integrations<span aria-hidden="true">→</span></button>
+                <button type="button" className="workspaceSignOut" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}<span aria-hidden="true">→</span></button>
               </div>
             )}
           </aside>

@@ -31,7 +31,8 @@ import {
   downloadDocument,
   getClaimedTransactionIds,
 } from './document-extraction';
-import { getAttachables, normalizeAttachables, getTransactions, normalizeTransactionList } from './quickbooks';
+import { downloadAttachableBytes, getAttachables, normalizeAttachables, getTransactions, normalizeTransactionList } from './quickbooks';
+import { createHash } from 'node:crypto';
 import { applyEvidenceReviewDecisions, attachPersistedRegisterIds, type EvidenceReviewDecision, type EffectiveRegisterEntry } from './evidence-review';
 
 export type QboRegisterState =
@@ -47,6 +48,7 @@ export interface RegisterEntry {
 
   // QBO Transaction
   qboTxnId: string | null;
+  attachedQboTxnId?: string | null; // Actual QBO link when a warning occupies a document-side row.
   qboTxnType: string | null;
   qboTxnDate: string | null;
   qboTxnVendor: string | null;
@@ -75,6 +77,10 @@ export interface RegisterEntry {
   humanApproved?: boolean;
   reviewDecision?: EvidenceReviewDecision;
   reviewHistory?: EvidenceReviewDecision[];
+  evidenceItemId?: string;
+  evidenceRole?: 'primary' | 'additional' | 'unassigned';
+  evidenceReviewStatus?: 'not_required' | 'required' | 'approved' | 'discarded';
+  qboAttachmentStatus?: 'not_requested' | 'pending' | 'uploaded' | 'verified' | 'failed' | 'unknown';
 }
 
 export interface BuildRegisterOptions {
@@ -101,6 +107,7 @@ export async function buildQboEvidenceRegister(
 
   // 3. Fetch all inbox documents for this realm
   const inboxDocuments = await fetchInboxDocuments(realmId);
+  await bindQboAttachmentIdentities(realmId, attachables, inboxDocuments);
 
   // 4. Extract fields from all inbox documents (if not already done)
   const documentFields = await extractFieldsFromAllDocuments(inboxDocuments);
@@ -190,7 +197,8 @@ async function fetchInboxDocuments(realmId: string) {
   const { data, error } = await supabaseAdmin
     .from('inbox_documents')
     .select('*')
-    .eq('realm_id', realmId);
+    .eq('realm_id', realmId)
+    .is('archived_at', null);
 
   if (error) throw new Error(`Failed to fetch inbox documents: ${error.message}`);
   return data || [];
@@ -264,7 +272,8 @@ async function matchAllDocumentsToAllTransactions(
       collectionRequestId,
       transactions,
       realmId,
-      claimedByOtherDocuments
+      claimedByOtherDocuments,
+      true // Existing evidence does not make a file's actual transaction uncertain.
     );
     results.set(doc.id, matchResult);
     if (matchResult.status === 'matched' && matchResult.transactionId) {
@@ -651,8 +660,11 @@ export function resolveStateConflicts(entries: RegisterEntry[]): RegisterEntry[]
           ...(existing.qboTxnId ? [existing.qboTxnId] : []),
           ...(entry.qboTxnId ? [entry.qboTxnId] : []),
         ]);
+        const provenWrong = [existing, entry].filter(row => row.registerState === 'WRONG_MATCHED');
         for (const conflictingEntry of [existing, entry]) {
-          conflictingEntry.registerState = 'REVIEW_REQUIRED';
+          if (conflictingEntry.registerState === 'MATCHED' && provenWrong.some(wrong => wrong.correctQboTxnId === conflictingEntry.qboTxnId)) continue;
+          if (conflictingEntry.registerState === 'WRONG_MATCHED') conflictingEntry.attachedQboTxnId ??= conflictingEntry.qboTxnId;
+          else conflictingEntry.registerState = 'REVIEW_REQUIRED';
           conflictingEntry.qboTxnId = null;
           conflictingEntry.reviewCandidateTxnIds = [...candidates];
         }
@@ -669,7 +681,8 @@ export function resolveStateConflicts(entries: RegisterEntry[]): RegisterEntry[]
       const currentPriority = entry.registerState === 'MATCHED' ? 2 : 1;
       const existingPriority = existing.registerState === 'MATCHED' ? 2 : 1;
       const loser = currentPriority > existingPriority ? existing : entry;
-      loser.registerState = 'REVIEW_REQUIRED';
+      if (loser.registerState === 'WRONG_MATCHED') loser.attachedQboTxnId ??= loser.qboTxnId;
+      else loser.registerState = 'REVIEW_REQUIRED';
       loser.qboTxnId = null;
       loser.reviewCandidateTxnIds = [...new Set([...loser.reviewCandidateTxnIds, originalTxnId])];
       if (currentPriority > existingPriority) transactionStates.set(originalTxnId, entry);
@@ -697,9 +710,48 @@ function createRegisterEntry(entry: RegisterEntry): RegisterEntry {
  * Match by filename or other metadata
  */
 export function findInboxDocumentForAttachable(attachable: any, inboxDocuments: any[]): any | null {
-  if (!attachable?.entityId) return null;
-  const candidates = inboxDocuments.filter((doc) => doc.matched_transaction_id === attachable.entityId);
+  if (!attachable?.attachableId) return null;
+  const candidates = inboxDocuments.filter((doc) => doc.verified_qbo_attachable_ids?.includes(String(attachable.attachableId)));
   return candidates.length === 1 ? candidates[0] : null;
+}
+
+/** Establish file identity independently of its current QBO transaction link. */
+export async function bindQboAttachmentIdentities(realmId: string, attachables: any[], documents: any[]): Promise<void> {
+  for (const document of documents) document.verified_qbo_attachable_ids = [];
+  if (!attachables.length || !documents.length) return;
+  const items: any[] = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await supabaseAdmin.from('qbo_evidence_items')
+      .select('inbox_document_id, qbo_attachable_id, qbo_attachment_status, content_sha256, evidence_role, review_status')
+      .eq('realm_id', realmId).order('id').range(offset, offset + 499);
+    if (error || !data) throw new Error('Could not verify QBO evidence file identities');
+    items.push(...data);
+    if (data.length < 500) break;
+  }
+  const active = new Map(documents.map(document => [document.id, document]));
+  const seen = new Set<string>();
+  for (const attachment of attachables) {
+    const id = String(attachment.attachableId ?? '');
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const recorded = items.filter(item => String(item.qbo_attachable_id ?? '') === id &&
+      item.qbo_attachment_status === 'verified' && active.has(item.inbox_document_id));
+    let identity = recorded.length === 1 ? recorded[0] : null;
+    if (!identity && Number(attachment.fileSize) > 0 && Number(attachment.fileSize) <= 20 * 1024 * 1024) {
+      try {
+        const { bytes } = await downloadAttachableBytes(id, realmId);
+        const hash = createHash('sha256').update(bytes).digest('hex');
+        const sameBytes = items.filter(item => item.content_sha256 === hash &&
+          item.review_status !== 'discarded' && active.has(item.inbox_document_id));
+        const primary = sameBytes.filter(item => item.evidence_role === 'primary');
+        identity = primary.length === 1 ? primary[0] : sameBytes.length === 1 ? sameBytes[0] : null;
+      } catch {
+        // Unreadable/unknown files stay REVIEW_REQUIRED; never infer correctness.
+        continue;
+      }
+    }
+    if (identity) active.get(identity.inbox_document_id).verified_qbo_attachable_ids.push(id);
+  }
 }
 
 /**
@@ -945,6 +997,7 @@ export async function getRegisterEntries(
     realmId: row.realm_id,
     collectionRequestId: row.collection_request_id,
     qboTxnId: row.qbo_txn_id,
+    attachedQboTxnId: row.register_state === 'WRONG_MATCHED' && !row.qbo_txn_id && row.review_candidate_txn_ids?.length === 1 ? row.review_candidate_txn_ids[0] : null,
     qboTxnType: row.qbo_txn_type,
     qboTxnDate: row.qbo_txn_date,
     qboTxnVendor: row.qbo_txn_vendor,
@@ -1024,7 +1077,9 @@ export async function updateRegisterForDocument(
   duplicateOfDocumentId?: string | null // Legacy - DUPLICATE state removed in 4-state model
 ): Promise<RegisterEntry | null> {
   // Fetch existing register entries for this realm to check current state
-  const existingEntries = await getRegisterEntries(realmId, collectionRequestId);
+  // A transaction's register identity is company-wide, even when a document
+  // arrives through a newer collection request.
+  const existingEntries = await getRegisterEntries(realmId);
 
   // Check if this document is already in the register
   const existingEntry = existingEntries.find(e =>
@@ -1171,11 +1226,9 @@ export async function updateRegisterForDocument(
     );
 
     if (conflictingEntry) {
-      // This transaction is already MATCHED with a different document
-      // Mark this document as WRONG_MATCHED - proven incorrect pre-existing attachment
-      newState = 'WRONG_MATCHED';
-      qboTxnId = conflictingEntry.qboTxnId ?? null;
-      matchedTransaction = conflictingEntry as any;
+      // Keep the transaction's primary register association immutable. The caller
+      // records this new certain document as additional evidence linked to the row.
+      return null;
     }
   }
 
@@ -1194,10 +1247,10 @@ export async function updateRegisterForDocument(
     attachmentFileSize: null,
     attachmentDownloadUrl: null,
     registerState: newState,
-    matchedDocumentId: newState === 'MATCHED' || newState === 'REVIEW_REQUIRED' || newState === 'WRONG_MATCHED' ? documentId : null,
+    matchedDocumentId: newState === 'MATCHED' || newState === 'REVIEW_REQUIRED' ? documentId : null,
     matchConfidence: matchResult.confidence,
     matchFieldDetails: matchResult.candidateDetails ?? null,
-    correctQboTxnId: newState === 'WRONG_MATCHED' ? matchResult.transactionId ?? null : null,
+    correctQboTxnId: null,
     reviewCandidateTxnIds: newState === 'REVIEW_REQUIRED' ? reviewCandidateTxnIds : [],
   };
 

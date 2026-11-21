@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { filterQboTransactions } from '@/lib/transaction-search';
+import { legacyReviewEntries } from '@/lib/evidence-register-view';
 import { WorkspaceHeader, useWordingMode } from '@/app/quickbooks/icons';
 
 type ReviewDecision = {
@@ -37,6 +38,19 @@ type RegisterEntry = {
   reviewDecision?: ReviewDecision;
   reviewHistory?: ReviewDecision[];
 };
+type EvidenceItem = {
+  id: string;
+  match_status: string;
+  evidence_role: string;
+  qbo_attachment_status: string;
+  qbo_attachable_id: string | null;
+  candidate_qbo_txn_ids: string[];
+  register_entry_id: string | null;
+  proposed_register_entry_id?: string | null;
+  document: { filename: string; content_type: string; file_size: number } | null;
+  duplicateOf: { register_entry_id: string | null; proposed_register_entry_id?: string | null; candidate_qbo_txn_ids: string[] } | null;
+  transactionChoices: Array<{ id: string; qbo_txn_id: string | null; qbo_txn_type: string | null; qbo_txn_date: string | null; qbo_txn_vendor: string | null; qbo_txn_amount: number | null; qbo_txn_doc_number: string | null }>;
+};
 
 function initialDate(offsetDays: number) {
   const date = new Date();
@@ -60,6 +74,22 @@ export default function EvidenceReviewPage() {
   const [transactionResults, setTransactionResults] = useState<Record<string, SearchableTransaction[]>>({});
   const [searchedTransactionIds, setSearchedTransactionIds] = useState<Record<string, string[]>>({});
   const [searchingId, setSearchingId] = useState<string | null>(null);
+  const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([]);
+  const [managedDocumentIds, setManagedDocumentIds] = useState<string[] | null>(null);
+  const [evidenceItemError, setEvidenceItemError] = useState<string | null>(null);
+  const [evidenceItemActionId, setEvidenceItemActionId] = useState<string | null>(null);
+  const [evidenceItemTransactions, setEvidenceItemTransactions] = useState<Record<string, string>>({});
+  const [evidenceItemSearchOpen, setEvidenceItemSearchOpen] = useState<Record<string, boolean>>({});
+  const [evidenceItemSearch, setEvidenceItemSearch] = useState<Record<string, string>>({});
+  const [selectedReviewItemId, setSelectedReviewItemId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (evidenceItems.length === 0) {
+      setSelectedReviewItemId(null);
+      return;
+    }
+    if (!selectedReviewItemId || !evidenceItems.some(item => item.id === selectedReviewItemId)) setSelectedReviewItemId(evidenceItems[0].id);
+  }, [evidenceItems, selectedReviewItemId]);
 
   const loadRegister = useCallback(async () => {
     setLoading(true);
@@ -71,6 +101,22 @@ export default function EvidenceReviewPage() {
       if (!response.ok) throw new Error(body.error || 'Unable to load evidence register');
       if (!Array.isArray(body)) throw new Error('Evidence register response was invalid');
       setEntries(body);
+      try {
+        const [itemResponse, managedResponse] = await Promise.all([
+          fetch('/api/evidence/items'), fetch('/api/evidence/items?managedDocuments=true'),
+        ]);
+        const [itemBody, managedBody] = await Promise.all([itemResponse.json(), managedResponse.json()]);
+        if (!itemResponse.ok) throw new Error(itemBody.error || 'Unable to load evidence items');
+        if (!Array.isArray(itemBody)) throw new Error('Evidence item response was invalid');
+        if (!managedResponse.ok || !Array.isArray(managedBody.documentIds) || managedBody.documentIds.some((id: unknown) => typeof id !== 'string')) throw new Error('Unable to verify document review ownership');
+        setEvidenceItems(itemBody);
+        setManagedDocumentIds(managedBody.documentIds);
+        setEvidenceItemError(null);
+      } catch (itemCause) {
+        setManagedDocumentIds(null);
+        setEvidenceItems([]);
+        setEvidenceItemError(itemCause instanceof Error ? itemCause.message : 'Unable to load evidence items');
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to load evidence register');
     } finally {
@@ -78,11 +124,72 @@ export default function EvidenceReviewPage() {
     }
   }, [startDate, endDate]);
 
+  async function reviewEvidenceItem(item: EvidenceItem, action: 'confirm_match' | 'approve_additional' | 'add_duplicate' | 'discard_additional' | 'discard_duplicate') {
+    const selectedRegisterEntryId = evidenceItemTransactions[item.id] || item.register_entry_id || item.proposed_register_entry_id || item.duplicateOf?.register_entry_id || item.duplicateOf?.proposed_register_entry_id || '';
+    if ((action === 'add_duplicate' || action === 'confirm_match') && !selectedRegisterEntryId) {
+      setError('Choose the QuickBooks transaction before confirming this decision.');
+      return;
+    }
+    const choice = item.transactionChoices.find(transaction => transaction.id === selectedRegisterEntryId);
+    const registerEntry = entries.find(entry => entry.id === selectedRegisterEntryId);
+    const transactionLabel = [
+      choice?.qbo_txn_type ?? registerEntry?.qboTxnType,
+      choice?.qbo_txn_doc_number ?? registerEntry?.qboTxnDocNumber,
+      choice?.qbo_txn_id ?? registerEntry?.qboTxnId,
+      choice?.qbo_txn_vendor ?? registerEntry?.qboTxnVendor,
+      choice?.qbo_txn_date ?? registerEntry?.qboTxnDate,
+      choice?.qbo_txn_amount ?? registerEntry?.qboTxnAmount,
+    ].filter(value => value !== null && value !== undefined && value !== '').join(' · ');
+    if (!action.startsWith('discard') && !transactionLabel) {
+      setError('Refresh the register and choose a transaction whose details are available.');
+      return;
+    }
+    const documentLabel = item.document?.filename || `QBO attachment ${item.qbo_attachable_id || item.id}`;
+    const confirmation = action.startsWith('discard')
+      ? `Discard "${documentLabel}" from the active review queue? Its file and review history will be retained.`
+      : action === 'confirm_match'
+        ? `Confirm "${documentLabel}" matches ${transactionLabel}? If this is the first evidence, Zevidt will attach it to QuickBooks and verify the association. Existing evidence requires an additional approval.`
+        : `Approve "${documentLabel}" for ${transactionLabel}? Zevidt will attach it to QuickBooks and verify the association, or reuse an existing identical attachment.`;
+    if (!window.confirm(confirmation)) return;
+
+    setEvidenceItemActionId(item.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/evidence/items/${encodeURIComponent(item.id)}/review`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action, finalConfirmation: true, registerEntryId: selectedRegisterEntryId || undefined }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        if (body.decisionRecorded) await loadRegister();
+        throw new Error(body.error || 'The review decision could not be completed');
+      }
+      if (action.startsWith('discard')) {
+        setNotice('Discarded from the active queue. The document and audit history remain stored in Zevidt.');
+      } else if (body.requiresAdditionalApproval) {
+        setNotice('Match confirmed. This transaction already has evidence, so the document remains in review and was not attached to QuickBooks.');
+      } else if (body.attachment?.status === 'verified') {
+        setNotice('Decision recorded. QuickBooks attachment was read back and verified.');
+      } else {
+        throw new Error(body.error || 'Decision was recorded, but the QuickBooks attachment is not verified.');
+      }
+      await loadRegister();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to save the evidence decision');
+    } finally {
+      setEvidenceItemActionId(null);
+    }
+  }
+
+  // The async loader updates state after its network requests complete.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void loadRegister(); }, [loadRegister]);
 
   const reviewEntries = useMemo(
-    () => entries.filter(entry => entry.registerState === 'REVIEW_REQUIRED' || entry.registerState === 'WRONG_MATCHED'),
-    [entries],
+    () => legacyReviewEntries(entries, managedDocumentIds),
+    [entries, managedDocumentIds],
   );
 
   async function searchTransactions(entry: RegisterEntry) {
@@ -155,12 +262,114 @@ export default function EvidenceReviewPage() {
         <form onSubmit={event => { event.preventDefault(); void loadRegister(); }} className="mb-6 flex flex-wrap items-end gap-3 rounded-lg border border-[#d9dde5] bg-white p-4">
           <label className="grid gap-1 text-sm font-medium">Start date<input type="date" value={startDate} onChange={event => setStartDate(event.target.value)} className="h-10 rounded border border-[#c8ced8] px-3" required /></label>
           <label className="grid gap-1 text-sm font-medium">End date<input type="date" value={endDate} onChange={event => setEndDate(event.target.value)} className="h-10 rounded border border-[#c8ced8] px-3" required /></label>
-          <button disabled={loading} className="h-10 rounded bg-[#243b53] px-4 font-semibold text-white disabled:opacity-60">{loading ? 'Loading…' : 'Refresh register'}</button>
-          <span className="ml-auto text-sm text-[#5d6675]">{reviewEntries.length} item{reviewEntries.length === 1 ? '' : 's'} to review</span>
+          <button disabled={loading} className="h-11 rounded-lg bg-[#3e6ae1] px-4 font-semibold text-white shadow-sm hover:bg-[#3159c9] disabled:opacity-60">{loading ? 'Loading…' : 'Refresh register'}</button>
+          <span className="ml-auto text-sm text-[#5d6675]">{reviewEntries.length + evidenceItems.length} item{reviewEntries.length + evidenceItems.length === 1 ? '' : 's'} to review</span>
         </form>
 
         {error ? <p role="alert" className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</p> : null}
         {notice ? <p role="status" className="mb-4 rounded border border-green-200 bg-green-50 p-3 text-sm text-green-800">{notice}</p> : null}
+
+        <section className="mb-8" aria-labelledby="evidence-item-review-heading">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h2 id="evidence-item-review-heading" className="text-xl font-semibold">Documents needing a decision</h2>
+              <p className="mt-1 text-sm text-[#5d6675]">Approve additional evidence only after checking it. Discard keeps the file and decision history in Zevidt.</p>
+            </div>
+            <span className="text-sm text-[#5d6675]">{evidenceItems.length} item{evidenceItems.length === 1 ? '' : 's'}</span>
+          </div>
+          {evidenceItemError ? <p role="alert" className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{evidenceItemError}</p> : null}
+          {!evidenceItemError && evidenceItems.length === 0 ? <p className="rounded-lg border border-[#d9dde5] bg-white p-5 text-sm text-[#5d6675]">No document-level decisions are waiting.</p> : null}
+          <div className="reviewWorkbench">
+            <aside className="reviewQueue" aria-label="Review queue">
+              {evidenceItems.map(item => {
+                const isDuplicate = item.match_status === 'duplicate';
+                const isPotential = item.match_status === 'potential';
+                return <button key={item.id} type="button" className={selectedReviewItemId === item.id ? 'isSelected' : ''} onClick={() => setSelectedReviewItemId(item.id)}>
+                  <span>{isDuplicate ? 'Duplicate' : isPotential ? 'Potential match' : 'Additional'}</span>
+                  <strong>{item.document?.filename || 'QuickBooks attachment'}</strong>
+                  <small>{item.qbo_attachment_status.replace('_', ' ')}</small>
+                </button>;
+              })}
+            </aside>
+            <div className="reviewDetail">
+            {evidenceItems.filter(item => item.id === selectedReviewItemId).map(item => {
+              const choices = item.transactionChoices ?? [];
+              const selectedRegisterEntryId = evidenceItemTransactions[item.id] || item.register_entry_id || item.proposed_register_entry_id || item.duplicateOf?.register_entry_id || item.duplicateOf?.proposed_register_entry_id || '';
+              const isDuplicate = item.match_status === 'duplicate';
+              const isPotential = item.match_status === 'potential';
+              const selectedRegisterEntry = entries.find(entry => entry.id === selectedRegisterEntryId && entry.qboTxnId);
+              const linkedTransaction = choices.find(choice => choice.id === selectedRegisterEntryId) ?? (selectedRegisterEntry ? {
+                id: selectedRegisterEntry.id!,
+                qbo_txn_id: selectedRegisterEntry.qboTxnId,
+                qbo_txn_type: selectedRegisterEntry.qboTxnType,
+                qbo_txn_date: selectedRegisterEntry.qboTxnDate,
+                qbo_txn_doc_number: selectedRegisterEntry.qboTxnDocNumber,
+                qbo_txn_vendor: selectedRegisterEntry.qboTxnVendor,
+                qbo_txn_amount: selectedRegisterEntry.qboTxnAmount,
+              } : undefined);
+              const searchOpen = evidenceItemSearchOpen[item.id] ?? false;
+              const searchText = evidenceItemSearch[item.id] ?? '';
+              const registerSearchResults = filterQboTransactions(entries
+                .filter(entry => !!entry.id && !!entry.qboTxnId)
+                .map(entry => ({
+                  registerEntryId: entry.id!, txnId: entry.qboTxnId!, txnType: entry.qboTxnType,
+                  date: entry.qboTxnDate, vendor: entry.qboTxnVendor,
+                  amount: entry.qboTxnAmount, docNumber: entry.qboTxnDocNumber,
+                })), searchText);
+              return (
+                <article key={item.id} className="reviewDecisionCard rounded-lg border border-[#d9dde5] bg-white p-5 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-[#65758b]">{isDuplicate ? 'Duplicate found' : isPotential ? 'Potential match' : 'Additional evidence'} · review required</p>
+                      <h3 className="mt-1 font-semibold">{item.document?.filename || 'QuickBooks attachment'}</h3>
+                      <p className="mt-1 text-sm text-[#5d6675]">{item.document ? `${item.document.content_type} · ${item.document.file_size} bytes` : `QBO attachment ID ${item.qbo_attachable_id || 'unavailable'}`} · {item.qbo_attachment_status.replace('_', ' ')}</p>
+                      {linkedTransaction ? <p className="mt-1 text-sm text-[#5d6675]">{linkedTransaction.qbo_txn_date || 'Date unknown'} · {linkedTransaction.qbo_txn_type || 'Transaction'} · {linkedTransaction.qbo_txn_doc_number || linkedTransaction.qbo_txn_id || 'Reference unavailable'} · {linkedTransaction.qbo_txn_vendor || 'Vendor unknown'} · {linkedTransaction.qbo_txn_amount ?? 'Amount unknown'}</p> : null}
+                    </div>
+                    <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900">{isDuplicate ? 'Duplicate' : 'Additional'}</span>
+                  </div>
+                  {isDuplicate || isPotential ? (
+                    <label className="mt-4 grid max-w-2xl gap-1 text-sm font-medium">{isPotential ? 'Confirm the suggested transaction' : 'Transaction for approved duplicate'}
+                      <select value={selectedRegisterEntryId} onChange={event => setEvidenceItemTransactions(current => ({ ...current, [item.id]: event.target.value }))} className="h-10 rounded border border-[#c8ced8] bg-white px-3">
+                        <option value="">Choose a transaction</option>
+                        {linkedTransaction && !choices.some(choice => choice.id === linkedTransaction.id) ? <option value={linkedTransaction.id}>{linkedTransaction.qbo_txn_date || 'Date unknown'} · {linkedTransaction.qbo_txn_type || 'Transaction'} · {linkedTransaction.qbo_txn_doc_number || linkedTransaction.qbo_txn_id} · {linkedTransaction.qbo_txn_vendor || 'Vendor unknown'} · {linkedTransaction.qbo_txn_amount ?? 'Amount unknown'}</option> : null}
+                        {choices.map(choice => <option key={choice.id} value={choice.id}>{choice.qbo_txn_date || 'Date unknown'} · {choice.qbo_txn_type || 'Transaction'} · {choice.qbo_txn_doc_number || choice.qbo_txn_id || choice.id} · {choice.qbo_txn_vendor || 'Vendor unknown'} · {choice.qbo_txn_amount ?? 'Amount unknown'}</option>)}
+                      </select>
+                      <button type="button" onClick={() => setEvidenceItemSearchOpen(current => ({ ...current, [item.id]: !searchOpen }))} className="mt-2 w-fit text-sm font-semibold text-[#176b52]">
+                        {searchOpen ? 'Close transaction search' : 'None of these? Search loaded transactions'}
+                      </button>
+                    </label>
+                  ) : null}
+                  {searchOpen ? (
+                    <div className="mt-3 grid max-w-2xl gap-2 rounded border border-[#d9dde5] bg-[#f8faf8] p-3">
+                      <label className="grid gap-1 text-sm font-medium">Search transactions already loaded in this company’s register
+                        <input value={searchText} onChange={event => setEvidenceItemSearch(current => ({ ...current, [item.id]: event.target.value }))} className="h-10 rounded border border-[#c8ced8] bg-white px-3" placeholder="Vendor, document number, amount, or transaction ID" />
+                      </label>
+                      <ul className="grid gap-1">
+                        {registerSearchResults.filter(result => !choices.some(choice => choice.id === result.registerEntryId)).map(result => (
+                          <li key={result.registerEntryId}>
+                            <button type="button" onClick={() => {
+                              setEvidenceItemTransactions(current => ({ ...current, [item.id]: result.registerEntryId }));
+                              setEvidenceItemSearchOpen(current => ({ ...current, [item.id]: false }));
+                            }} className="w-full rounded border border-[#e2e7e3] bg-white p-2 text-left text-sm hover:bg-[#f0f7f2]">
+                              {result.date || 'Date unknown'} · {result.txnType || 'Transaction'} · {result.docNumber || result.txnId} · {result.vendor || 'Name unknown'} · {result.amount ?? 'Amount unknown'}
+                            </button>
+                          </li>
+                        ))}
+                        {searchText.trim() && registerSearchResults.filter(result => !choices.some(choice => choice.id === result.registerEntryId)).length === 0 ? <li className="text-sm text-[#5d6675]">No other transactions match in the loaded register. Expand the review date range and refresh to load more.</li> : null}
+                        {!searchText.trim() ? <li className="text-sm text-[#5d6675]">Enter a search term to find other transactions in the current review date range.</li> : null}
+                      </ul>
+                    </div>
+                  ) : null}
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button type="button" disabled={evidenceItemActionId === item.id || ((isDuplicate || isPotential) && !selectedRegisterEntryId)} onClick={() => void reviewEvidenceItem(item, isDuplicate ? 'add_duplicate' : isPotential ? 'confirm_match' : 'approve_additional')} className="h-11 rounded-lg bg-[#3e6ae1] px-4 text-sm font-semibold text-white shadow-sm hover:bg-[#3159c9] disabled:opacity-50">{evidenceItemActionId === item.id ? 'Saving…' : isDuplicate ? 'Add to QuickBooks' : isPotential ? 'Confirm match' : 'Approve and attach'}</button>
+                    {!isPotential ? <button type="button" disabled={evidenceItemActionId === item.id} onClick={() => void reviewEvidenceItem(item, isDuplicate ? 'discard_duplicate' : 'discard_additional')} className="h-10 rounded border border-[#c8ced8] px-4 text-sm font-semibold disabled:opacity-50">Discard from review</button> : null}
+                  </div>
+                </article>
+              );
+            })}
+            </div>
+          </div>
+        </section>
 
         {reviewEntries.length === 0 && !loading ? (
           <div className="rounded-lg border border-[#d9dde5] bg-white p-8 text-center text-sm text-[#5d6675]">No review items were returned for this date range.</div>
@@ -215,7 +424,7 @@ export default function EvidenceReviewPage() {
                   </details>
 
                   <div className="mt-4 flex flex-wrap gap-2">
-                    <button type="button" disabled={!entry.id || savingId === entry.id || !selectedId} onClick={() => void submitDecision(entry, 'confirm_match')} className="h-10 rounded bg-[#243b53] px-4 text-sm font-semibold text-white disabled:opacity-50">{savingId === entry.id ? 'Saving…' : 'Approve document'}</button>
+                    <button type="button" disabled={!entry.id || savingId === entry.id || !selectedId} onClick={() => void submitDecision(entry, 'confirm_match')} className="h-11 rounded-lg bg-[#3e6ae1] px-4 text-sm font-semibold text-white shadow-sm hover:bg-[#3159c9] disabled:opacity-50">{savingId === entry.id ? 'Saving…' : 'Approve document'}</button>
                     <button type="button" disabled={!entry.id || savingId === entry.id} onClick={() => void submitDecision(entry, 'reject_match')} className="h-10 rounded border border-[#c8ced8] px-4 text-sm font-semibold disabled:opacity-50">Reject match</button>
                     <button type="button" disabled={!entry.id || savingId === entry.id || !selectedId} onClick={() => void submitDecision(entry, 'mark_wrong_match')} className="h-10 rounded border border-amber-300 px-4 text-sm font-semibold text-amber-900 disabled:opacity-50">Mark wrong match</button>
                   </div>

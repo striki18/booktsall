@@ -36,63 +36,41 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Unable to download document' }, { status: 500 });
   }
 }
-export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { realmId } = await requireAuth();
+    const { realmId, user } = await requireAuth();
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: 'Explicit confirmation is required to remove this document from the inbox' }, { status: 400 });
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || (body as Record<string, unknown>).confirmed !== true) {
+      return NextResponse.json({ error: 'Explicit confirmation is required to remove this document from the inbox' }, { status: 400 });
+    }
+    const reason = (body as Record<string, unknown>).reason;
+    if (reason !== undefined && (typeof reason !== 'string' || reason.length > 1000)) {
+      return NextResponse.json({ error: 'Invalid archive reason' }, { status: 400 });
+    }
     const { id } = await params;
-    const { data: document, error: documentError } = await supabaseAdmin
-      .from('inbox_documents')
-      .select('id, realm_id, storage_path, content_type')
-      .eq('id', id)
-      .eq('realm_id', realmId)
-      .maybeSingle();
-    if (documentError) return NextResponse.json({ error: 'Unable to verify document ownership' }, { status: 500 });
-    if (!document) return NextResponse.json({ error: 'Document not found' }, { status: 404 });
-
-    const { data: registerReference, error: registerError } = await supabaseAdmin
-      .from('qbo_evidence_register')
-      .select('id')
-      .eq('realm_id', realmId)
-      .eq('matched_document_id', id)
-      .limit(1)
-      .maybeSingle();
-    if (registerError) return NextResponse.json({ error: 'Unable to verify evidence references' }, { status: 500 });
-    const { data: decisionReference, error: decisionError } = await supabaseAdmin
-      .from('evidence_review_decisions')
-      .select('id')
-      .eq('realm_id', realmId)
-      .eq('evidence_document_id', id)
-      .limit(1)
-      .maybeSingle();
-    if (decisionError) return NextResponse.json({ error: 'Unable to verify evidence references' }, { status: 500 });
-    const { data: packageReference, error: packageError } = await supabaseAdmin
-      .from('evidence_package_items')
-      .select('id')
-      .eq('document_id', id)
-      .limit(1)
-      .maybeSingle();
-    if (packageError) return NextResponse.json({ error: 'Unable to verify package history references' }, { status: 500 });
-    if (registerReference || decisionReference || packageReference) {
-      return NextResponse.json({ error: 'This document is linked to evidence or package history and cannot be deleted' }, { status: 409 });
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+      return NextResponse.json({ error: 'Invalid document ID' }, { status: 400 });
     }
-
-    const storage = supabaseAdmin.storage.from('evidence');
-    const { data: storedFile, error: downloadError } = await storage.download(document.storage_path);
-    if (downloadError || !storedFile) return NextResponse.json({ error: 'Unable to verify the stored evidence file' }, { status: 502 });
-    const fileBytes = Buffer.from(await storedFile.arrayBuffer());
-    const { error: removeError } = await storage.remove([document.storage_path]);
-    if (removeError) return NextResponse.json({ error: 'Unable to remove the stored evidence file' }, { status: 502 });
-
-    const { error: deleteError } = await supabaseAdmin.from('inbox_documents').delete().eq('id', id).eq('realm_id', realmId);
-    if (deleteError) {
-      const { error: restoreError } = await storage.upload(document.storage_path, fileBytes, {
-        upsert: false,
-        contentType: document.content_type,
-      });
-      console.error('Evidence metadata delete failed; storage restore attempted', restoreError ? 'failed' : 'completed');
-      return NextResponse.json({ error: 'Unable to delete document metadata' }, { status: 500 });
+    const { data, error } = await supabaseAdmin.rpc('archive_inbox_document', {
+      p_realm_id: realmId,
+      p_document_id: id,
+      p_actor_user_id: user.id,
+      p_reason: typeof reason === 'string' ? reason : null,
+    });
+    if (error) {
+      console.error('Inbox document archive failed');
+      return NextResponse.json({ error: 'Unable to remove document from inbox' }, { status: 503 });
     }
-    return NextResponse.json({ deleted: true }, { status: 200 });
+    if (data === 'not_found') return NextResponse.json({ error: 'Document not found' }, { status: 404 });
+    if (data !== 'archived' && data !== 'already_archived') {
+      return NextResponse.json({ error: 'Unable to remove document from inbox' }, { status: 503 });
+    }
+    return NextResponse.json({ archived: true, retained: true, auditRecorded: data === 'archived' }, { status: 200 });
   } catch (error) {
     const code = error instanceof Error ? error.message : '';
     if (code === 'UNAUTHORIZED') return NextResponse.json({ error: 'Authentication required' }, { status: 401 });

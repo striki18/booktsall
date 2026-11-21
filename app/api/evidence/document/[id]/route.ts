@@ -63,68 +63,43 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }, { status: 200 });
 }
 
-/**
- * DELETE /api/evidence/document/[id]
- *
- * Permanently removes an evidence document both from Supabase Storage and the
- * `evidence_documents` table.
- *
- * Responses:
- *   200 – Document deleted successfully
- *   400 – Invalid UUID supplied
- *   404 – Document not found
- *   500 – Storage or database error
- */
+/** Archive a document after explicit human confirmation; retain bytes and history. */
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-
-  let authenticatedSupabase: any;
-  try { ({ supabase: authenticatedSupabase } = await requireAuthContext()); } catch (error) { const status = ownershipErrorStatus(error); return NextResponse.json({ error: status === 401 ? 'Authentication required' : 'Forbidden' }, { status: status ?? 500 }); }
-
-  // Validate UUID format
-  const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-  if (!id || !uuidRegex.test(id)) {
+  let context: Awaited<ReturnType<typeof requireAuthContext>>;
+  try { context = await requireAuthContext(); } catch (error) {
+    const status = ownershipErrorStatus(error);
+    return NextResponse.json({ error: status === 401 ? 'Authentication required' : 'Forbidden' }, { status: status ?? 500 });
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
     return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
   }
-
-  // Fetch document metadata to obtain storage_path
-  const { data: doc, error: docError } = await authenticatedSupabase
-    .from('evidence_documents')
-    .select('id, evidence_request_id, storage_path')
-    .eq('id', id)
-    .single();
-
-  if (docError || !doc) {
-    return NextResponse.json({ error: 'Document not found' }, { status: 404 });
-  }
-
-  try {
-    await requireOwnedEvidenceRequest(doc.evidence_request_id);
-  } catch (error) {
-    const status = ownershipErrorStatus(error);
+  const { data: doc, error } = await context.supabase.from('evidence_documents')
+    .select('id, evidence_request_id').eq('id', id).single();
+  if (error || !doc) return NextResponse.json({ error: 'Document not found' }, { status: 404 });
+  try { await requireOwnedEvidenceRequest(doc.evidence_request_id); } catch (ownershipError) {
+    const status = ownershipErrorStatus(ownershipError);
     return NextResponse.json({ error: status === 401 ? 'Authentication required' : status === 403 ? 'Forbidden' : 'Ownership check failed' }, { status: status ?? 500 });
   }
-  // Delete the file from Supabase Storage
-  const { error: storageError } = await supabaseAdmin
-    .storage
-    .from('evidence')
-    .remove([doc.storage_path]);
-
-  if (storageError) {
-    // Storage deletion failed – do not touch DB
-    return NextResponse.json({ error: storageError.message ?? 'Failed to delete storage object' }, { status: 500 });
+  let body: unknown;
+  try { body = await request.json(); } catch {
+    return NextResponse.json({ error: 'Explicit confirmation is required to archive evidence' }, { status: 400 });
   }
-
-  // Delete the row from the database
-  const { error: dbError } = await authenticatedSupabase
-    .from('evidence_documents')
-    .delete()
-    .eq('id', id);
-
-  if (dbError) {
-    // DB deletion failed after storage deletion – report error
-    return NextResponse.json({ error: dbError.message ?? 'Failed to delete database record' }, { status: 500 });
+  if (!body || typeof body !== 'object' || Array.isArray(body) || (body as Record<string, unknown>).confirmed !== true) {
+    return NextResponse.json({ error: 'Explicit confirmation is required to archive evidence' }, { status: 400 });
   }
-
-  return NextResponse.json({ message: 'Document deleted successfully' }, { status: 200 });
+  const reason = (body as Record<string, unknown>).reason;
+  if (reason !== undefined && (typeof reason !== 'string' || reason.length > 1000)) {
+    return NextResponse.json({ error: 'Invalid archive reason' }, { status: 400 });
+  }
+  const { data: result, error: archiveError } = await supabaseAdmin.rpc('archive_evidence_document', {
+    p_realm_id: context.realmId, p_document_id: id, p_actor_user_id: context.user.id,
+    p_reason: typeof reason === 'string' ? reason : null,
+  });
+  if (archiveError) return NextResponse.json({ error: 'Unable to archive evidence safely' }, { status: 503 });
+  if (result === 'not_found') return NextResponse.json({ error: 'Document not found' }, { status: 404 });
+  if (result !== 'archived' && result !== 'already_archived') {
+    return NextResponse.json({ error: 'Unable to archive evidence safely' }, { status: 503 });
+  }
+  return NextResponse.json({ archived: true, retained: true, auditRecorded: result === 'archived' });
 }

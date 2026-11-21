@@ -12,6 +12,17 @@ vi.mock('@/lib/auth', () => ({ requireAuth: mocks.requireAuth, requireAuthContex
 
 import { GET, POST } from '@/app/api/engagements/route';
 
+function createEngagementRequest() {
+  return new Request('http://localhost/api/engagements', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      realm_id: 'realm-1', company_name: 'Example', audit_type: 'audit',
+      start_date: '2026-01-01', end_date: '2026-12-31',
+    }),
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(mocks.query, {
@@ -63,5 +74,36 @@ describe('engagement routes', () => {
 
     expect(response.status).toBe(403);
     expect(mocks.from).not.toHaveBeenCalled();
+  });
+
+  it('creates an engagement without assigning unconfigured catalog requirements', async () => {
+    const engagement = {
+      id: 'new-engagement', realm_id: 'realm-1', company_name: 'Example', audit_type: 'audit',
+      start_date: '2026-01-01', end_date: '2026-12-31', status: 'draft',
+    };
+    const existingDraftQuery: Record<string, any> = {
+      select: vi.fn(() => existingDraftQuery),
+      eq: vi.fn(() => existingDraftQuery),
+      single: vi.fn(async () => ({ data: null, error: { code: 'PGRST116' } })),
+    };
+    const insertQuery: Record<string, any> = {
+      insert: vi.fn(() => insertQuery),
+      select: vi.fn(async () => ({ data: [engagement], error: null })),
+    };
+    mocks.requireAuthContext.mockResolvedValue({
+      supabase: { from: mocks.from }, user: { id: 'u1' }, realmId: 'realm-1',
+    });
+    mocks.from.mockImplementation((table: string) => {
+      expect(table).toBe('audit_engagements');
+      return mocks.from.mock.calls.length === 1 ? existingDraftQuery : insertQuery;
+    });
+
+    const response = await POST(createEngagementRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual(engagement);
+    expect(insertQuery.insert).toHaveBeenCalledWith([expect.objectContaining({ realm_id: 'realm-1' })]);
+    expect(mocks.from).toHaveBeenCalledTimes(2);
   });
 });

@@ -42,4 +42,29 @@ describe('QuickBooks transaction log privacy', () => {
     await expect(getAccessToken('realm-b')).rejects.toThrow('No QuickBooks token found');
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it('rejects a TransactionList Fault body even when HTTP status is 200', async () => {
+    const realmId = 'realm-report-fault';
+    await storeToken({ access_token: 'test-access', refresh_token: 'test-refresh', expires_at: new Date(Date.now() + 3600000).toISOString() }, realmId);
+    (fetch as any).mockResolvedValue({ ok: true, status: 200, json: async () => ({ Fault: { Error: [{ code: '6000' }] } }) });
+
+    await expect(getTransactions('2026-11-01', '2026-11-30', realmId)).rejects.toThrow('TransactionList fault response');
+  });
+
+  it('rejects a successful HTTP response with no report structure', async () => {
+    const realmId = 'realm-report-malformed';
+    await storeToken({ access_token: 'test-access', refresh_token: 'test-refresh', expires_at: new Date(Date.now() + 3600000).toISOString() }, realmId);
+    (fetch as any).mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+
+    await expect(getTransactions('2026-11-01', '2026-11-30', realmId)).rejects.toThrow('invalid TransactionList report');
+  });
+
+  it('accepts a structurally valid empty report', async () => {
+    const realmId = 'realm-empty-report';
+    const emptyReport = { Columns: { Column: [] }, Rows: { Row: [] } };
+    await storeToken({ access_token: 'test-access', refresh_token: 'test-refresh', expires_at: new Date(Date.now() + 3600000).toISOString() }, realmId);
+    (fetch as any).mockResolvedValue({ ok: true, status: 200, json: async () => emptyReport });
+
+    await expect(getTransactions('2026-11-01', '2026-11-30', realmId)).resolves.toEqual(emptyReport);
+  });
 });

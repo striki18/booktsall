@@ -61,7 +61,7 @@ export function DocumentTable({
                       onClick={() => onDelete(document.id)}
                       className="h-9 rounded-md border border-[#e1b8b8] px-3 font-semibold text-[#8a2d2d] transition hover:border-[#ba7474] hover:bg-[#fff5f5]"
                     >
-                      Delete
+                      Remove from inbox
                     </button>
                   </div>
                 </td>

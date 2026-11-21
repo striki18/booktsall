@@ -14,14 +14,19 @@ async function supabaseQuery(table: string, options: {
   single?: boolean;
   order?: { column: string; ascending: boolean };
   limit?: number;
+  isNull?: string[];
 }) {
-  const { method = 'GET', select = '*', filter = {}, body, single = false, order, limit } = options;
+  const { method = 'GET', select = '*', filter = {}, body, single = false, order, limit, isNull = [] } = options;
   
   let url = `${supabaseUrl}/rest/v1/${table}?select=${encodeURIComponent(select)}`;
   
   // Add filters
   for (const [key, value] of Object.entries(filter)) {
     url += `&${key}=eq.${encodeURIComponent(value)}`;
+  }
+
+  for (const column of isNull) {
+    url += `&${column}=is.null`;
   }
   
   // Add order
@@ -91,6 +96,7 @@ export async function GET() {
     });
     const { data: documents } = await supabaseQuery('inbox_documents', {
       filter: { realm_id }, order: { column: 'uploaded_at', ascending: false },
+      isNull: ['archived_at'],
     });
     const inboxLink = inbox
       ? `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/inbox/${inbox.token}`

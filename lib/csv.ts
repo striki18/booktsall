@@ -64,6 +64,12 @@ export function generateEvidenceRegisterCsv(registerEntries: any[]): string {
     { key: 'reviewedAt', header: 'Decision Timestamp' },
     { key: 'reviewRationale', header: 'Decision Rationale' },
     { key: 'reviewHistory', header: 'Decision History' },
+    { key: 'evidenceItemId', header: 'Evidence Item ID' },
+    { key: 'evidenceRole', header: 'Evidence Role' },
+    { key: 'evidenceReviewStatus', header: 'Evidence Review Status' },
+    { key: 'qboAttachmentStatus', header: 'QBO Attachment Status' },
+    { key: 'transactionId', header: 'Transaction ID' },
+    { key: 'correctTransactionId', header: 'Correct Transaction ID' },
   ];
   
   // Map register entries to CSV row format using registerState as the status
@@ -83,6 +89,12 @@ export function generateEvidenceRegisterCsv(registerEntries: any[]): string {
     reviewedAt: entry.reviewDecision?.created_at ?? '',
     reviewRationale: entry.reviewDecision?.rationale ?? '',
     reviewHistory: entry.reviewHistory?.length ? JSON.stringify(entry.reviewHistory) : '',
+    evidenceItemId: entry.evidenceItemId ?? '',
+    evidenceRole: entry.evidenceRole ?? '',
+    evidenceReviewStatus: entry.evidenceReviewStatus ?? '',
+    qboAttachmentStatus: entry.qboAttachmentStatus ?? '',
+    transactionId: entry.qboTxnId ?? entry.attachedQboTxnId ?? '',
+    correctTransactionId: entry.correctQboTxnId ?? '',
   }));
   
   return generateCsv(csvRecords, columns);

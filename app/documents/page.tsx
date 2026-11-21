@@ -110,12 +110,18 @@ export default function DocumentsPage() {
   }
 
   async function deleteDocument(id: string) {
+    const document = documents.find((item) => item.id === id);
+    if (!window.confirm(`Remove ${document?.name ?? 'this document'} from the inbox? The stored evidence file and audit record will be retained.`)) return;
     try {
-      const response = await fetch(`/api/firm/inbox/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const response = await fetch(`/api/firm/inbox/documents/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmed: true }),
+      });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Unable to delete document");
       setDocuments((current) => current.filter((document) => document.id !== id));
-      setMessage("Document deleted.");
+      setMessage("Removed from the inbox. The evidence file and audit record remain stored in Zevidt.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to delete document");
     }
@@ -133,7 +139,7 @@ export default function DocumentsPage() {
             <p className="mt-3 max-w-2xl text-base leading-7 text-[#5d6675]">{financeMode ? "Collect and manage the receipts and supporting evidence for your transactions." : "Drop in documents from email, messages, or folders. We’ll organize them for review."}</p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
-            <button type="button" onClick={browseFiles} disabled={isUploading} className="h-11 rounded-md bg-[#243b53] px-5 text-sm font-semibold text-white shadow-[0_8px_20px_rgba(36,59,83,0.16)] transition hover:bg-[#1b2f44] disabled:opacity-60">{isUploading ? "Uploading…" : "Upload"}</button>
+            <button type="button" onClick={browseFiles} disabled={isUploading} className="h-11 rounded-lg bg-[#3e6ae1] px-5 text-sm font-semibold text-white shadow-[0_4px_12px_rgba(62,106,225,0.22)] transition hover:bg-[#3159c9] disabled:opacity-60">{isUploading ? "Uploading…" : "Upload documents"}</button>
           </div>
         </header>
 

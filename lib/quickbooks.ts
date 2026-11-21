@@ -8,6 +8,12 @@ import { withRetry, DOWNLOAD_RETRY_CONFIG, sleep } from './retry';
 
 let memoryCache: any = null;
 
+type QuickBooksHttpError = Error & { status: number };
+
+function quickBooksHttpError(message: string, status: number): QuickBooksHttpError {
+  return Object.assign(new Error(message), { status });
+}
+
 /** Per-realm mutex to prevent concurrent token refreshes (refresh token rotation safety). */
 const refreshMutexes: Map<string, Promise<string | undefined>> = new Map();
 
@@ -105,9 +111,7 @@ export async function refreshAccessToken(refreshToken: string, realmId: string) 
 
       if (!res.ok) {
         const errBody = await res.text();
-        const error = new Error(`Failed to refresh QuickBooks token: ${res.status} ${errBody}`);
-        (error as any).status = res.status;
-        throw error;
+        throw quickBooksHttpError(`Failed to refresh QuickBooks token: ${res.status} ${errBody}`, res.status);
       }
 
       const data = await res.json();
@@ -375,16 +379,29 @@ export async function getTransactions(startDate: string, endDate: string, reques
       await res.text();
       console.error('Failed to fetch TransactionList report:', res.status);
       // Attach status for retry detection
-      const error = new Error('Failed to fetch TransactionList report');
-      (error as any).status = res.status;
-      throw error;
+      throw quickBooksHttpError('Failed to fetch TransactionList report', res.status);
     }
     const raw = await res.json();
+    assertTransactionListResponse(raw);
     // Avoid logging financial transaction details or customer/vendor information.
     const normalized = normalizeTransactionList(raw);
     console.log('TransactionList retrieved:', normalized.length, 'transactions');
     return raw;
   });
+}
+
+/** Reject QBO Fault payloads, including Fault bodies returned with HTTP 200. */
+function assertTransactionListResponse(report: any): void {
+  const fault = report?.Fault ?? report?.fault ?? report?.Report?.Fault;
+  if (fault) {
+    throw new Error('QuickBooks returned a TransactionList fault response');
+  }
+
+  const columns = report?.Report?.Columns?.Column ?? report?.Columns?.Column;
+  const rows = report?.Report?.Rows?.Row ?? report?.Rows?.Row;
+  if (!Array.isArray(columns) || !Array.isArray(rows)) {
+    throw new Error('QuickBooks returned an invalid TransactionList report');
+  }
 }
 
 /**
@@ -436,6 +453,7 @@ export async function getAttachables(requestedRealmId?: string) {
     const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
     const baseQuery = 'SELECT * FROM Attachable';
     const allAttachables: any[] = [];
+    let lastHttpStatus: number | null = null;
 
     while (true) {
       // Build a paginated query string.
@@ -448,14 +466,13 @@ export async function getAttachables(requestedRealmId?: string) {
           Accept: 'application/json',
         },
       });
+      lastHttpStatus = res.status;
       console.log('🔍 Attachable query response status:', res.status);
       if (!res.ok) {
         await res.text();
         console.error('Failed to fetch Attachable query:', res.status);
         // Attach status for retry detection
-        const error = new Error('Failed to fetch Attachable query');
-        (error as any).status = res.status;
-        throw error;
+        throw quickBooksHttpError('Failed to fetch Attachable query', res.status);
       }
 
       const raw = await res.json();
@@ -479,7 +496,37 @@ export async function getAttachables(requestedRealmId?: string) {
 
     console.log('🔍 Total attachables retrieved:', allAttachables.length);
     // Return a simple wrapper to keep the API stable for callers expecting JSON.
-    return { attachables: allAttachables };
+    return { attachables: allAttachables, httpStatus: lastHttpStatus };
+  });
+}
+
+/** Read one transaction by its exact QBO entity type and ID for write preflight. */
+export async function getTransactionById(entityType: string, entityId: string, requestedRealmId?: string) {
+  const { qboTransactionEntityType } = await import('./qbo-transaction-types');
+  const canonicalType = qboTransactionEntityType(entityType);
+  if (!canonicalType) throw new Error('Unsupported QuickBooks transaction type');
+  entityType = canonicalType;
+  return withApiRetry(async () => {
+    if (!requestedRealmId) throw new Error('Realm ID is required');
+    if (!/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(entityType) || !/^\d+$/.test(entityId)) {
+      throw new Error('A valid QuickBooks transaction type and ID are required');
+    }
+    const accessToken = await getAccessToken(requestedRealmId);
+    const query = `SELECT * FROM ${entityType} WHERE Id = '${entityId}'`;
+    const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${requestedRealmId}/query?query=${encodeURIComponent(query)}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      await response.text();
+      throw quickBooksHttpError('QuickBooks transaction verification failed', response.status);
+    }
+    const body = await response.json();
+    const rows = body?.QueryResponse?.[entityType];
+    const transactions = Array.isArray(rows) ? rows : rows ? [rows] : [];
+    const transaction = transactions.find((row: any) => String(row?.Id ?? '') === entityId) ?? null;
+    return { transaction, httpStatus: response.status };
   });
 }
 
@@ -531,36 +578,8 @@ export async function downloadFile(
 
     console.log('🔍 Download request URL:', downloadUrl);
 
-    // 4. Make the download request with Bearer authorization - WITH RETRY for connection failures
-    // Phase 10B: Retry on network/connection failures (not HTTP errors like 404, 403, etc.)
-    const res = await withDownloadRetry(async () => {
-      return await fetch(downloadUrl, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
-    });
-
-    console.log('🔍 Download response status:', res.status);
-
-    if (!res.ok) {
-      const errBody = await res.text();
-      console.error('Failed to download attachment:', res.status, errBody);
-      const failure: DownloadFileResult = {
-        success: false,
-        error: `Download failed: ${res.status} ${errBody}`,
-        attachableId,
-        fileName,
-        timestamp: new Date().toISOString(),
-      };
-      if (failed) failed.push(failure);
-      return failure;
-    }
-
-    // 5. Get the file bytes as ArrayBuffer
-    const arrayBuffer = await res.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    // Resolve QBO's temporary URL before writing actual file bytes.
+    const { bytes: buffer } = await downloadAttachableBytes(attachableId, realmId);
 
     if (buffer.length === 0) {
       const failure: DownloadFileResult = {
@@ -600,6 +619,44 @@ export async function downloadFile(
     if (failed) failed.push(failure);
     return failure;
   }
+}
+
+/** Read an existing sandbox attachment into memory for exact-byte deduplication. */
+export async function downloadAttachableBytes(attachableId: string, requestedRealmId?: string) {
+  if (!requestedRealmId || !/^\d+$/.test(attachableId)) {
+    throw new Error('A valid QuickBooks realm and attachment ID are required');
+  }
+  const accessToken = await getAccessToken(requestedRealmId);
+  const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${requestedRealmId}/download/${attachableId}`;
+  const response = await withDownloadRetry(() => fetch(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  }));
+  if (!response.ok) {
+    const error = new Error('QuickBooks attachment read-back failed');
+    (error as Error & { status?: number }).status = response.status;
+    throw error;
+  }
+  let bytes: Buffer;
+  if ((response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/plain')) {
+    // QBO Download returns a short-lived signed URL, not the file itself.
+    // Never forward the OAuth bearer token to the storage provider.
+    let temporaryUrl: URL;
+    try { temporaryUrl = new URL((await response.text()).trim()); }
+    catch { throw new Error('QuickBooks returned an invalid download location'); }
+    if (temporaryUrl.protocol !== 'https:' || temporaryUrl.username || temporaryUrl.password ||
+        (temporaryUrl.port && temporaryUrl.port !== '443') ||
+        !['amazonaws.com', 'intuit.com'].some(domain => temporaryUrl.hostname.endsWith(`.${domain}`))) {
+      throw new Error('QuickBooks returned an untrusted download location');
+    }
+    const file = await withDownloadRetry(() => fetch(temporaryUrl.toString(), { method: 'GET', redirect: 'error' }));
+    if (!file.ok) throw quickBooksHttpError('QuickBooks file download failed', file.status);
+    bytes = Buffer.from(await file.arrayBuffer());
+  } else {
+    bytes = Buffer.from(await response.arrayBuffer());
+  }
+  if (bytes.length === 0) throw new Error('QuickBooks returned an empty attachment');
+  return { bytes, httpStatus: response.status };
 }
 
 /**
@@ -982,11 +1039,12 @@ export function normalizeAttachables(raw: any): any[] {
  * @param entityId - QuickBooks entity ID to attach the file to
  * @returns The QBO Attachable response
  *
- * Phase 10A: Wrapped with retry logic for HTTP 429 rate limiting.
+ * Uploads are intentionally one-shot. Ambiguous outcomes must be reconciled
+ * from the immutable attempt log rather than retried automatically.
  */
 export interface UploadAttachableResult {
   attachable: any;
-  time: string;
+  httpStatus: number;
 }
 
 export async function uploadAttachable(
@@ -997,83 +1055,76 @@ export async function uploadAttachable(
   entityId: string,
   requestedRealmId?: string
 ): Promise<UploadAttachableResult> {
-  return withApiRetry(async () => {
-    if (!requestedRealmId) throw new Error('Realm ID is required');
-    const realmId = requestedRealmId;
-    const accessToken = await getAccessToken(realmId);
+  if (!requestedRealmId) throw new Error('Realm ID is required');
+  const realmId = requestedRealmId;
+  const accessToken = await getAccessToken(realmId);
 
-    // 3. Build the upload URL using the sandbox domain
-    const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
-    const uploadUrl = `${sandboxDomain}/v3/company/${realmId}/upload`;
+  // 3. Build the upload URL using the sandbox domain
+  const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
+  const uploadUrl = `${sandboxDomain}/v3/company/${realmId}/upload`;
 
-    // 4. Create multipart form data in the QBO upload format.
-    //    Part names are zero-indexed: file_metadata_0 (JSON) and file_content_0 (binary).
-    const formData = new FormData();
+  // 4. Create multipart form data in the QBO upload format.
+  //    Part names are zero-indexed: file_metadata_0 (JSON) and file_content_0 (binary).
+  const formData = new FormData();
 
-    // Add the file content part - convert Buffer/Uint8Array to ArrayBuffer for Blob
-    // Ensure we create a proper copy of the buffer
-    let fileArrayBuffer: ArrayBuffer;
-    if (fileBytes instanceof Buffer) {
-      const buf = fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength);
-      fileArrayBuffer = new ArrayBuffer(buf.byteLength);
-      new Uint8Array(fileArrayBuffer).set(new Uint8Array(buf));
-    } else if (fileBytes instanceof Uint8Array) {
-      const buf = fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength);
-      fileArrayBuffer = new ArrayBuffer(buf.byteLength);
-      new Uint8Array(fileArrayBuffer).set(new Uint8Array(buf));
-    } else {
-      fileArrayBuffer = fileBytes;
-    }
-    // Create a new Uint8Array to ensure we have a clean copy for Blob
-    const fileUint8Array = new Uint8Array(fileArrayBuffer);
-    const fileBlob = new Blob([fileUint8Array], { type: contentType });
-    formData.append('file_content_0', fileBlob, filename);
+  // Add the file content part - convert Buffer/Uint8Array to ArrayBuffer for Blob.
+  let fileArrayBuffer: ArrayBuffer;
+  if (fileBytes instanceof Buffer) {
+    const buf = fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength);
+    fileArrayBuffer = new ArrayBuffer(buf.byteLength);
+    new Uint8Array(fileArrayBuffer).set(new Uint8Array(buf));
+  } else if (fileBytes instanceof Uint8Array) {
+    const buf = fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength);
+    fileArrayBuffer = new ArrayBuffer(buf.byteLength);
+    new Uint8Array(fileArrayBuffer).set(new Uint8Array(buf));
+  } else {
+    fileArrayBuffer = fileBytes;
+  }
+  const fileUint8Array = new Uint8Array(fileArrayBuffer);
+  const fileBlob = new Blob([fileUint8Array], { type: contentType });
+  formData.append('file_content_0', fileBlob, filename);
 
-    // Add the Attachable metadata JSON part (file_metadata_0)
-    const attachableMetadata = JSON.stringify({
-      AttachableRef: [
-        {
-          EntityRef: {
-            type: entityType,
-            value: entityId,
-          },
-          IncludeOnSend: false,
+  // Add the Attachable metadata JSON part (file_metadata_0).
+  const attachableMetadata = JSON.stringify({
+    AttachableRef: [
+      {
+        EntityRef: {
+          type: entityType,
+          value: entityId,
         },
-      ],
-      FileName: filename,
-      ContentType: contentType,
-    });
-    // The metadata part must be sent with Content-Type: application/json.
-    // Appending a plain string would set it to text/plain, which QBO rejects.
-    formData.append('file_metadata_0', new Blob([attachableMetadata], { type: 'application/json' }));
-
-    console.log('QuickBooks attachment upload request prepared');
-
-    // 5. Make the upload request with Bearer authorization
-    const res = await fetch(uploadUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
-        // Note: Do NOT set Content-Type header - let the browser/fetch set it with the boundary
+        IncludeOnSend: false,
       },
-      body: formData,
-    });
-
-    console.log('🔍 Upload response status:', res.status);
-
-    if (!res.ok) {
-      await res.text();
-      console.error('Failed to upload attachment:', res.status);
-      // Attach status for retry detection
-      const error = new Error(`Upload failed: ${res.status}`);
-      (error as any).status = res.status;
-      throw error;
-    }
-
-    const result = await res.json();
-    console.log('QuickBooks attachment upload completed');
-
-    return result;
+    ],
+    FileName: filename,
+    ContentType: contentType,
   });
+  // The metadata part must be sent with Content-Type: application/json.
+  formData.append('file_metadata_0', new Blob([attachableMetadata], { type: 'application/json' }));
+
+  // Make one upload request; deliberately do not apply retry middleware.
+  const res = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
+    body: formData,
+  });
+
+  if (!res.ok) {
+    await res.text();
+    throw quickBooksHttpError(`Upload failed: ${res.status}`, res.status);
+  }
+
+  const result = await res.json();
+  // Upload returns one AttachableResponse per file, unlike entity reads.
+  // This function sends exactly one file; ambiguous batches stay unresolved.
+  if (Array.isArray(result?.AttachableResponse)) {
+    const responses = result.AttachableResponse;
+    return {
+      attachable: responses.length === 1 && !responses[0]?.Fault ? responses[0]?.Attachable : undefined,
+      httpStatus: res.status,
+    };
+  }
+  return { attachable: result?.Attachable ?? result?.attachable ?? result, httpStatus: res.status };
 }

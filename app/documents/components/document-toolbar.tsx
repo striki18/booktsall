@@ -26,7 +26,7 @@ export function DocumentToolbar({
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder="Search by file name"
-          className="mt-2 h-11 w-full rounded-md border border-[#c8ced8] bg-white px-3 text-sm outline-none transition placeholder:text-[#8f98a7] focus:border-[#243b53] focus:ring-4 focus:ring-[#d7e2df]"
+          className="mt-2 h-11 w-full rounded-lg border border-[#c8ced8] bg-white px-3 text-sm outline-none transition placeholder:text-[#8f98a7] focus:border-[#3e6ae1] focus:ring-4 focus:ring-[#eef3ff]"
         />
       </label>
 
@@ -39,7 +39,7 @@ export function DocumentToolbar({
           onChange={(event) =>
             onFilterChange(event.target.value as FileTypeFilter)
           }
-          className="mt-2 h-11 w-full rounded-md border border-[#c8ced8] bg-white px-3 text-sm outline-none transition focus:border-[#243b53] focus:ring-4 focus:ring-[#d7e2df]"
+          className="mt-2 h-11 w-full rounded-lg border border-[#c8ced8] bg-white px-3 text-sm outline-none transition focus:border-[#3e6ae1] focus:ring-4 focus:ring-[#eef3ff]"
         >
           {fileTypeFilters.map((option) => (
             <option key={option} value={option}>

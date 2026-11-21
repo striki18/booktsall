@@ -32,8 +32,8 @@ export async function GET(
         created_at: inbox.created_at,
       },
     });
-  } catch (error) {
-    console.error('Public inbox GET error:', error);
+  } catch {
+    console.error('Public inbox lookup failed');
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -91,7 +91,7 @@ export async function POST(
         });
 
       if (uploadError) {
-        console.error('Storage upload error:', uploadError);
+        console.error('Inbox Storage upload failed');
         return NextResponse.json({ error: `Failed to upload ${file.name}` }, { status: 500 });
       }
 
@@ -128,8 +128,8 @@ export async function POST(
       uploaded: uploadedDocuments.length,
       documents: uploadedDocuments,
     });
-  } catch (error) {
-    console.error('Public inbox upload error:', error);
+  } catch {
+    console.error('Public inbox upload failed');
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

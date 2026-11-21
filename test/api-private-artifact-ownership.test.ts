@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   sessionFrom: vi.fn(),
   supabaseSingle: vi.fn(),
   adminSingle: vi.fn(),
+  archiveRpc: vi.fn(),
   storageRemove: vi.fn(),
   storageUpload: vi.fn(),
   storageSignedUrl: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn(() => supabaseQuery) 
 vi.mock('@/lib/supabase-admin', () => ({
   supabaseAdmin: {
     from: vi.fn(() => adminQuery),
+    rpc: mocks.archiveRpc,
     storage: { from: mocks.storageFrom },
   },
 }));
@@ -98,5 +100,51 @@ describe('private artifact ownership gates', () => {
     expect(mocks.requireOwnedEngagement).toHaveBeenCalledWith('engagement-1');
     expect(mocks.storageSignedUrl).not.toHaveBeenCalled();
     expect(mocks.storageUpload).not.toHaveBeenCalled();
+  });
+});
+describe('legacy evidence retained archive', () => {
+  const id = '123e4567-e89b-42d3-a456-426614174000';
+  const context = { params: Promise.resolve({ id }) };
+  function request(body: unknown) {
+    return new Request('http://localhost/api/evidence/document/' + id, {
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }) as never;
+  }
+
+  it('requires explicit human confirmation before archiving owned evidence', async () => {
+    mocks.requireOwnedEvidenceRequest.mockResolvedValue({});
+    const response = await deleteEvidenceDocument(request({}), context);
+    expect(response.status).toBe(400);
+    expect(mocks.archiveRpc).not.toHaveBeenCalled();
+    expect(mocks.storageRemove).not.toHaveBeenCalled();
+  });
+
+  it('records a confirmed archive using the authenticated company and actor', async () => {
+    mocks.requireOwnedEvidenceRequest.mockResolvedValue({});
+    mocks.archiveRpc.mockResolvedValue({ data: 'archived', error: null });
+    const response = await deleteEvidenceDocument(request({ confirmed: true, reason: 'Human approval' }), context);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ archived: true, retained: true, auditRecorded: true });
+    expect(mocks.archiveRpc).toHaveBeenCalledWith('archive_evidence_document', {
+      p_realm_id: 'realm-1', p_document_id: id, p_actor_user_id: 'u1', p_reason: 'Human approval',
+    });
+    expect(mocks.storageRemove).not.toHaveBeenCalled();
+  });
+
+  it('preserves the file on an archive RPC failure', async () => {
+    mocks.requireOwnedEvidenceRequest.mockResolvedValue({});
+    mocks.archiveRpc.mockResolvedValue({ data: null, error: { message: 'PRIVATE_DATABASE_DETAIL' } });
+    const response = await deleteEvidenceDocument(request({ confirmed: true }), context);
+    expect(response.status).toBe(503);
+    expect(JSON.stringify(await response.json())).not.toContain('PRIVATE_');
+    expect(mocks.storageRemove).not.toHaveBeenCalled();
+  });
+
+  it('keeps historical document downloads available', async () => {
+    mocks.requireOwnedEvidenceRequest.mockResolvedValue({});
+    mocks.storageSignedUrl.mockResolvedValue({ data: { signedUrl: 'https://example.test/retained.pdf' }, error: null });
+    const response = await getEvidenceDocument(new Request('http://localhost') as never, context);
+    expect(response.status).toBe(200);
+    expect(mocks.storageSignedUrl).toHaveBeenCalledWith('private/doc.pdf', 600);
   });
 });

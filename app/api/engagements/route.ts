@@ -92,44 +92,8 @@ export async function POST(request: Request) {
     const inserted = data as any[];
     const newEngagement = inserted[0];
 
-    // ----- Evidence Plan generation -----
-    // Check if evidence already exists for this engagement (duplicate protection).
-    const { data: existingPlan } = await supabase
-      .from('audit_evidence_plan')
-      .select('id')
-      .eq('engagement_id', newEngagement.id);
-    if (existingPlan && existingPlan.length > 0) {
-      // Evidence already generated; skip generation.
-      return NextResponse.json(newEngagement);
-    }
-
-    // Fetch all catalog items ordered by display_order.
-    const { data: catalog, error: catalogErr } = await supabase
-      .from('audit_evidence_catalog')
-      .select('id')
-      .order('display_order', { ascending: true });
-    if (catalogErr) {
-      // Roll back engagement creation.
-      await supabase.from('audit_engagements').delete().eq('id', newEngagement.id);
-      throw catalogErr;
-    }
-
-    // Prepare evidence plan rows.
-  const planRows = (catalog as any[]).map(item => ({
-    engagement_id: newEngagement.id,
-    catalog_id: item.id,
-    status: 'requested',
-  }));
-
-    // Insert evidence plan rows.
-    const { error: planErr } = await supabase.from('audit_evidence_plan').insert(planRows);
-    if (planErr) {
-      // Roll back engagement creation.
-      await supabase.from('audit_engagements').delete().eq('id', newEngagement.id);
-      throw planErr;
-    }
-
-    // Return the newly created engagement.
+    // Leave the evidence plan empty until the user selects confirmed requirements.
+    // The generic catalog is a template, not a universal obligation for every audit type.
     return NextResponse.json(newEngagement);
   } catch (e: any) {
     const authResponse = authFailure(e);

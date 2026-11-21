@@ -54,7 +54,8 @@ export async function POST(request: NextRequest) {
     const { data, error } = await context.supabase
       .from('evidence_documents')
       .select('id, evidence_request_id, filename, storage_path')
-      .in('evidence_request_id', requestIds);
+      .in('evidence_request_id', requestIds)
+      .is('archived_at', null);
     if (error) return NextResponse.json({ error: 'Database error' }, { status: 500 });
     documents = data ?? [];
   }

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   requireAuth: vi.fn(),
+  ownershipLookup: vi.fn(),
   getTransactions: vi.fn(),
   getAttachables: vi.fn(),
   getRegisterEntries: vi.fn(),
@@ -13,6 +14,15 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/auth', () => ({ requireAuth: mocks.requireAuth }));
+vi.mock('@/lib/supabase-admin', () => ({
+  supabaseAdmin: { from: vi.fn(() => {
+    const query: Record<string, unknown> = {};
+    query.select = vi.fn(() => query);
+    query.eq = vi.fn(() => query);
+    query.maybeSingle = mocks.ownershipLookup;
+    return query;
+  }) },
+}));
 vi.mock('@/lib/quickbooks', () => ({
   getTransactions: mocks.getTransactions,
   normalizeTransactionList: vi.fn(() => []),
@@ -124,5 +134,64 @@ describe('evidence API company scope', () => {
     expect(postResponse.status).toBe(403);
     expect(mocks.getRegisterEntries).not.toHaveBeenCalled();
     expect(mocks.persistRegisterEntries).not.toHaveBeenCalled();
+  });
+});
+
+describe('register refresh bootstraps durable transactions', () => {
+  const dates = { realmId: 'realm-owned', startDate: '2026-01-01', endDate: '2026-12-31' };
+  function request(body: unknown) {
+    return new Request('http://localhost/api/evidence/qbo-register', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+  }
+
+  it('builds real-source register rows before persistence rather than re-saving an empty cache', async () => {
+    mocks.requireAuth.mockResolvedValue({ realmId: 'realm-owned' });
+    const computed = [{ qboTxnId: 'txn-1', registerState: 'MISSING' }];
+    const persisted = [{ ...computed[0], id: 'stable-id' }];
+    mocks.buildQboEvidenceRegister.mockResolvedValue(computed);
+    mocks.persistRegisterEntries.mockResolvedValue(undefined);
+    mocks.getRegisterEntries.mockResolvedValue(persisted);
+    mocks.applyStoredEvidenceReviewDecisions.mockResolvedValue(persisted);
+    const response = await qboRegisterPost(request(dates));
+    expect(response.status).toBe(200);
+    expect(mocks.buildQboEvidenceRegister).toHaveBeenCalledWith({ ...dates, collectionRequestId: undefined });
+    expect(mocks.persistRegisterEntries).toHaveBeenCalledWith(computed, 'realm-owned');
+    expect(mocks.buildQboEvidenceRegister.mock.invocationCallOrder[0]).toBeLessThan(mocks.persistRegisterEntries.mock.invocationCallOrder[0]);
+    expect(mocks.applyStoredEvidenceReviewDecisions).toHaveBeenCalledWith(persisted, 'realm-owned', persisted);
+    expect(await response.json()).toMatchObject({ success: true, count: 1, register: persisted });
+  });
+
+  it('rejects impossible dates before discovery or persistence', async () => {
+    mocks.requireAuth.mockResolvedValue({ realmId: 'realm-owned' });
+    const response = await qboRegisterPost(request({ ...dates, startDate: '2026-02-30' }));
+    expect(response.status).toBe(400);
+    expect(mocks.buildQboEvidenceRegister).not.toHaveBeenCalled();
+    expect(mocks.persistRegisterEntries).not.toHaveBeenCalled();
+  });
+
+  it('rejects another company before discovery or persistence', async () => {
+    mocks.requireAuth.mockResolvedValue({ realmId: 'realm-owned' });
+    const response = await qboRegisterPost(request({ ...dates, realmId: 'another-company' }));
+    expect(response.status).toBe(403);
+    expect(mocks.buildQboEvidenceRegister).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unowned collection request before discovery', async () => {
+    mocks.requireAuth.mockResolvedValue({ realmId: 'realm-owned' });
+    mocks.ownershipLookup.mockResolvedValue({ data: null, error: null });
+    const response = await qboRegisterPost(request({ ...dates, collectionRequestId: '123e4567-e89b-42d3-a456-426614174000' }));
+    expect(response.status).toBe(403);
+    expect(mocks.buildQboEvidenceRegister).not.toHaveBeenCalled();
+  });
+
+  it('does not report success after failed persistence', async () => {
+    mocks.requireAuth.mockResolvedValue({ realmId: 'realm-owned' });
+    mocks.buildQboEvidenceRegister.mockResolvedValue([]);
+    mocks.persistRegisterEntries.mockRejectedValueOnce(new Error('PRIVATE_DB_FAILURE'));
+    const response = await qboRegisterPost(request(dates));
+    expect(response.status).toBe(500);
+    expect(JSON.stringify(await response.json())).not.toContain('PRIVATE_');
+    expect(mocks.getRegisterEntries).not.toHaveBeenCalled();
   });
 });

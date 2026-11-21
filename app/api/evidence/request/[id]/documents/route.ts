@@ -43,6 +43,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     .from('evidence_documents')
     .select('id, filename, content_type, file_size, storage_path, uploaded_at')
     .eq('evidence_request_id', id)
+    .is('archived_at', null)
     .order('uploaded_at', { ascending: false });
 
   if (docsError) {

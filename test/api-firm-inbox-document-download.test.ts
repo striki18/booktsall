@@ -5,16 +5,19 @@ const mocks = vi.hoisted(() => ({
   query: {} as Record<string, any>,
   single: vi.fn(),
   createSignedUrl: vi.fn(),
+  rpc: vi.fn(),
+  storageRemove: vi.fn(),
 }));
 vi.mock('@/lib/auth', () => ({ requireAuth: mocks.requireAuth }));
 vi.mock('@/lib/supabase-admin', () => ({
   supabaseAdmin: {
     from: vi.fn(() => mocks.query),
-    storage: { from: vi.fn(() => ({ createSignedUrl: mocks.createSignedUrl })) },
+    rpc: mocks.rpc,
+    storage: { from: vi.fn(() => ({ createSignedUrl: mocks.createSignedUrl, remove: mocks.storageRemove })) },
   },
 }));
 
-import { GET } from '@/app/api/firm/inbox/documents/[id]/route';
+import { DELETE, GET } from '@/app/api/firm/inbox/documents/[id]/route';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -50,5 +53,43 @@ describe('firm inbox document download', () => {
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe('https://storage.invalid/signed');
     expect(mocks.createSignedUrl).toHaveBeenCalledWith('inbox/realm-1/file.pdf', 600);
+  });
+});
+
+describe('firm inbox document archive', () => {
+  const documentId = '11111111-1111-4111-8111-111111111111';
+
+  beforeEach(() => {
+    mocks.requireAuth.mockResolvedValue({ user: { id: 'user-1' }, realmId: 'realm-1' });
+  });
+
+  it('requires explicit confirmation before calling the archive function', async () => {
+    const response = await DELETE(new Request('http://localhost', { method: 'DELETE', body: JSON.stringify({}) }), { params: Promise.resolve({ id: documentId }) });
+    expect(response.status).toBe(400);
+    expect(mocks.rpc).not.toHaveBeenCalled();
+  });
+
+  it('archives within the authenticated realm and retains the evidence file', async () => {
+    mocks.rpc.mockResolvedValue({ data: 'archived', error: null });
+    const response = await DELETE(new Request('http://localhost', {
+      method: 'DELETE', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmed: true, reason: 'Duplicate upload' }),
+    }), { params: Promise.resolve({ id: documentId }) });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ archived: true, retained: true, auditRecorded: true });
+    expect(mocks.rpc).toHaveBeenCalledWith('archive_inbox_document', {
+      p_realm_id: 'realm-1', p_document_id: documentId, p_actor_user_id: 'user-1', p_reason: 'Duplicate upload',
+    });
+    expect(mocks.storageRemove).not.toHaveBeenCalled();
+  });
+
+  it('does not expose a company document outside the authorized realm', async () => {
+    mocks.rpc.mockResolvedValue({ data: 'not_found', error: null });
+    const response = await DELETE(new Request('http://localhost', {
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirmed: true }),
+    }), { params: Promise.resolve({ id: documentId }) });
+    expect(response.status).toBe(404);
+    expect(mocks.rpc).toHaveBeenCalledWith('archive_inbox_document', expect.objectContaining({ p_realm_id: 'realm-1' }));
   });
 });

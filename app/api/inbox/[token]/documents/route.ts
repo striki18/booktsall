@@ -2,6 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 import { processInboxDocument, type ProcessedDocumentResult } from '../../../../../lib/document-extraction';
 import { updateRegisterForDocument } from '../../../../../lib/qbo-evidence-register';
+import { recordProcessedEvidence, type EvidenceIngestionResult } from '../../../../../lib/qbo-evidence-ingestion';
+import { MAX_EVIDENCE_UPLOAD_FILES, validateEvidenceFile } from '../../../../../lib/upload-validation';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -49,29 +51,46 @@ export async function POST(
 
     const realmId = inbox.realm_id;
     const formData = await request.formData();
-    const files = formData.getAll('files') as File[];
+    const files = formData.getAll('files');
 
     if (!files || files.length === 0) {
       return NextResponse.json({ error: 'No files provided' }, { status: 400 });
     }
+    if (files.length > MAX_EVIDENCE_UPLOAD_FILES) {
+      return NextResponse.json({ error: `A maximum of ${MAX_EVIDENCE_UPLOAD_FILES} files can be uploaded at once` }, { status: 400 });
+    }
+    if (files.some((file) => !(file instanceof File))) {
+      return NextResponse.json({ error: 'Only file uploads are allowed' }, { status: 400 });
+    }
+
+    const validatedFiles = await Promise.all((files as File[]).map(async (file) => ({
+      file,
+      validation: await validateEvidenceFile(file),
+    })));
+    const invalidFile = validatedFiles.find(({ validation }) => !validation.valid);
+    if (invalidFile && !invalidFile.validation.valid) {
+      return NextResponse.json({ error: invalidFile.validation.error }, { status: 400 });
+    }
 
     const uploadedDocuments = [];
 
-    for (const file of files) {
+    for (const { file, validation } of validatedFiles) {
+      if (!validation.valid) continue;
       const fileExt = file.name.split('.').pop() || '';
-      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const storagePath = `inbox/${realmId}/${token}/${fileName}`;
+      const documentId = crypto.randomUUID();
+      const fileName = `document.${fileExt}`;
+      const storagePath = `inbox/${realmId}/${documentId}/${fileName}`;
 
       // Upload to Supabase storage
       const { error: uploadError } = await supabaseAdmin.storage
         .from('evidence')
         .upload(storagePath, file, {
-          contentType: file.type,
+          contentType: validation.contentType,
           upsert: false,
         });
 
       if (uploadError) {
-        console.error('Storage upload error:', uploadError);
+        console.error('Inbox Storage upload failed');
         return NextResponse.json({ error: 'Failed to upload file' }, { status: 500 });
       }
 
@@ -82,14 +101,14 @@ export async function POST(
           realm_id: realmId,
           storage_path: storagePath,
           filename: file.name,
-          content_type: file.type,
+          content_type: validation.contentType,
           file_size: file.size,
         })
         .select()
         .single();
 
       if (docError) {
-        console.error('Document insert error:', docError);
+        console.error('Inbox document metadata insert failed');
         return NextResponse.json({ error: 'Failed to save document metadata' }, { status: 500 });
       }
 
@@ -97,6 +116,7 @@ export async function POST(
       // processing attempt is persisted and returned so it can be retried visibly.
       let processingStatus: 'pending' | 'processed' | 'failed' = 'pending';
       let processingError: string | null = null;
+      let evidenceResult: EvidenceIngestionResult | null = null;
       try {
         const collectionRequestId = await findLatestCollectionRequest(realmId);
         if (collectionRequestId) {
@@ -117,6 +137,7 @@ export async function POST(
             result.isDuplicate,
             result.duplicateOfDocumentId
           );
+          evidenceResult = await recordProcessedEvidence({ realmId, documentId: document.id, result, actorUserId: null });
 
           const { error: completedError } = await supabaseAdmin
             .from('inbox_documents')
@@ -141,12 +162,13 @@ export async function POST(
         ...document,
         processing_status: processingStatus,
         processing_error: processingError,
+        evidence: evidenceResult,
       });
     }
 
     return NextResponse.json({ documents: uploadedDocuments }, { status: 201 });
-  } catch (error) {
-    console.error('Document upload error:', error);
+  } catch {
+    console.error('Inbox document upload failed');
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

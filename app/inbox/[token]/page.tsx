@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { uploadEvidenceFiles, type BulkUploadResult } from '@/lib/evidence-bulk-upload';
 import styles from './page.module.css';
 
 interface InboxInfo {
@@ -29,6 +30,9 @@ export default function InboxPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const uploadLock = useRef(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
+  const [uploadResult, setUploadResult] = useState<BulkUploadResult | null>(null);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [token, setToken] = useState<string | null>(null);
@@ -96,30 +100,20 @@ export default function InboxPage({
   };
 
   const uploadFiles = async (files: File[]) => {
+    if (uploadLock.current) return;
+    uploadLock.current = true;
     const { token } = await params;
     setUploading(true);
+    setUploadResult(null);
 
     try {
-      const formData = new FormData();
-      files.forEach((file) => {
-        formData.append('files', file);
-      });
-
-      const res = await fetch(`/api/inbox/${token}/documents`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Upload failed');
-      }
-
-      const data = await res.json();
-      setUploadedFiles((prev) => [...data.documents, ...prev]);
-    } catch (e: any) {
-      alert(e.message);
+      const result = await uploadEvidenceFiles<UploadedFile>(files,
+        body => fetch(`/api/inbox/${encodeURIComponent(token)}/documents`, { method: 'POST', body }),
+        document => setUploadedFiles(previous => [document, ...previous]),
+        (current, total) => setUploadProgress({ current, total }));
+      setUploadResult(result);
     } finally {
+      uploadLock.current = false;
       setUploading(false);
     }
   };
@@ -163,6 +157,15 @@ export default function InboxPage({
           <p className={styles.subtitle}>
             Upload the files requested by your team. No account needed.
           </p>
+        </div>
+
+        <div aria-live="polite" className="my-4 text-sm">
+          {uploading ? <p>Uploading and checking file {uploadProgress.current} of {uploadProgress.total}. Keep this page open.</p> : null}
+          {uploadResult ? <div>
+            <p>{uploadResult.uploaded} file{uploadResult.uploaded === 1 ? '' : 's'} received.</p>
+            {uploadResult.rejected.map((failure, index) => <p key={index}>{failure.filename}: {failure.message}</p>)}
+            {uploadResult.uncertain ? <p role="alert">We could not confirm the result for {uploadResult.uncertain}. Please ask your team to check before sending it again. {uploadResult.notSent} remaining files were not sent.</p> : null}
+          </div> : null}
         </div>
 
         <div

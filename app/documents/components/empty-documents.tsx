@@ -18,7 +18,7 @@ export function EmptyDocuments({ hasDocuments, onUpload }: EmptyDocumentsProps) 
         <button
           type="button"
           onClick={onUpload}
-          className="mt-7 h-12 rounded-md bg-[#243b53] px-6 text-base font-semibold text-white shadow-[0_8px_20px_rgba(36,59,83,0.18)] transition hover:bg-[#1b2f44]"
+          className="mt-7 h-12 rounded-lg bg-[#3e6ae1] px-6 text-base font-semibold text-white shadow-[0_6px_18px_rgba(62,106,225,0.24)] transition hover:bg-[#3159c9]"
         >
           Upload Documents
         </button>

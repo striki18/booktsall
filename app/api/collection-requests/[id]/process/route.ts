@@ -3,6 +3,7 @@ import { processCollectionRequestDocuments } from '@/lib/document-extraction';
 import { updateRegisterForDocument } from '@/lib/qbo-evidence-register';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAuth } from '@/lib/auth';
+import { recordProcessedEvidence } from '@/lib/qbo-evidence-ingestion';
 
 /**
  * POST /api/collection-requests/[id]/process
@@ -42,9 +43,12 @@ export async function POST(
       .from('collection_requests')
       .select('realm_id')
       .eq('id', collectionRequestId)
-      .single();
+      .maybeSingle();
 
-    if (crError || !collectionRequest) {
+    if (crError) {
+      throw new Error('Could not verify collection request');
+    }
+    if (!collectionRequest) {
       return NextResponse.json({ error: 'Collection request not found' }, { status: 404 });
     }
 
@@ -56,6 +60,7 @@ export async function POST(
     const results = await processCollectionRequestDocuments(collectionRequestId);
 
     // Persist each result to the evidence register
+    const evidenceResults: Awaited<ReturnType<typeof recordProcessedEvidence>>[] = [];
     for (const result of results) {
       await updateRegisterForDocument(
         result.matchResult.documentId,
@@ -66,27 +71,34 @@ export async function POST(
         result.isDuplicate,
         result.duplicateOfDocumentId
       );
+      evidenceResults.push(await recordProcessedEvidence({
+        realmId,
+        documentId: result.matchResult.documentId,
+        result,
+        actorUserId: user.id,
+      }));
     }
 
-    return NextResponse.json(results, { status: 200 });
-  } catch (e: any) {
+    return NextResponse.json(results.map((result, index) => ({ ...result, evidence: evidenceResults[index] })), { status: 200 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : '';
     // Handle auth errors specifically
-    if (e.message === 'UNAUTHORIZED') {
+    if (message === 'UNAUTHORIZED') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    if (e.message === 'NO_REALM_ID') {
+    if (message === 'NO_REALM_ID') {
       return NextResponse.json({ error: 'No realm ID associated with user' }, { status: 400 });
     }
-    if (e.message === 'FORBIDDEN') {
+    if (message === 'FORBIDDEN') {
       return NextResponse.json({ error: 'Forbidden: Cannot access other realm data' }, { status: 403 });
     }
 
-    console.error('Collection request processing error:', e);
+    console.error('Collection request processing failed');
 
-    if (e.message?.includes('not found')) {
-      return NextResponse.json({ error: e.message }, { status: 404 });
+    if (message === 'Collection request not found' || message === 'Document not found') {
+      return NextResponse.json({ error: message }, { status: 404 });
     }
 
-    return NextResponse.json({ error: e.message ?? 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error: 'Could not process collection documents' }, { status: 500 });
   }
 }

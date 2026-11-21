@@ -27,7 +27,7 @@ export function UploadDropzone({
       onDrop={onDrop}
       className={`rounded-md border border-dashed p-6 transition sm:p-8 ${
         isDragging
-          ? "border-[#243b53] bg-[#eef4f2]"
+          ? "border-[#3e6ae1] bg-[#eef3ff]"
           : "border-[#bfc7d3] bg-white"
       }`}
     >
@@ -52,7 +52,7 @@ export function UploadDropzone({
         <button
           type="button"
           onClick={onBrowse}
-          className="h-11 rounded-md bg-[#243b53] px-5 text-sm font-semibold text-white shadow-[0_8px_20px_rgba(36,59,83,0.16)] transition hover:bg-[#1b2f44]"
+          className="h-11 rounded-lg border border-[#cfd4dc] bg-white px-5 text-sm font-semibold text-[#171a20] transition hover:border-[#3e6ae1] hover:text-[#3159c9]"
         >
           Upload Documents
         </button>

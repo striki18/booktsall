@@ -136,3 +136,28 @@ describe('QuickBooks company membership migration contract', () => {
     expect(membershipSchema).toContain('GRANT ALL ON TABLE public.qbo_company_memberships TO service_role');
   });
 });
+
+describe('server-only inbox and register writes migration contract', () => {
+  const writeScope = readFileSync(
+    resolve(process.cwd(), 'supabase/migrations/20261114001200_reserve_evidence_writes_for_server.sql'),
+    'utf8',
+  );
+
+  it.each(['inbox_documents', 'qbo_evidence_register'])('replaces the %s ALL policy with realm-scoped SELECT', (table) => {
+    expect(writeScope).toContain(`DROP POLICY IF EXISTS ${table}_company_scope ON public.${table};`);
+    expect(writeScope).toMatch(new RegExp(`CREATE POLICY ${table}_company_scope ON public\\.${table}\\s+FOR SELECT TO authenticated`));
+    expect(writeScope).toContain("realm_id = (SELECT auth.jwt() -> 'app_metadata' ->> 'realm_id')");
+    expect(writeScope).not.toMatch(/CREATE POLICY[^;]*\bFOR (ALL|INSERT|UPDATE|DELETE)\b/i);
+  });
+
+  it('revokes direct client privileges and fails atomically if effective writes remain', () => {
+    expect(writeScope).toMatch(/BEGIN;[\s\S]+COMMIT;\s*$/);
+    expect(writeScope).toMatch(/REVOKE ALL PRIVILEGES ON TABLE public\.inbox_documents, public\.qbo_evidence_register\s+FROM PUBLIC, anon, authenticated;/);
+    expect(writeScope).toContain('GRANT SELECT ON TABLE public.inbox_documents, public.qbo_evidence_register TO authenticated;');
+    expect(writeScope).toContain("has_any_column_privilege(client_role, evidence_table, 'INSERT, UPDATE, REFERENCES')");
+    expect(writeScope).toContain("has_table_privilege(client_role, evidence_table, 'DELETE, TRUNCATE, TRIGGER')");
+    expect(writeScope).toContain("RAISE EXCEPTION 'Unexpected write privileges remain");
+    expect(writeScope).toContain("RAISE EXCEPTION 'Required server privileges are missing");
+    expect(writeScope).toContain("RAISE EXCEPTION 'Unexpected permissive read policy");
+  });
+});

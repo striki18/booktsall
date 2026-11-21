@@ -26,7 +26,7 @@ vi.mock('@/lib/supabase-admin', () => ({
     from: vi.fn(() => ({
       select: vi.fn(() => ({
         eq: vi.fn(() => ({
-          single: vi.fn(),
+          maybeSingle: vi.fn(),
         })),
       })),
     })),
@@ -39,6 +39,10 @@ vi.mock('@/lib/document-extraction', () => ({
 
 vi.mock('@/lib/qbo-evidence-register', () => ({
   updateRegisterForDocument: vi.fn(),
+}));
+
+vi.mock('@/lib/qbo-evidence-ingestion', () => ({
+  recordProcessedEvidence: vi.fn(),
 }));
 
 vi.mock('next/server', () => ({
@@ -140,11 +144,6 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
   });
 
   describe('Unauthenticated Request', () => {
-    beforeEach(() => {
-      const params = { id: validCollectionRequestId };
-      const mockRequest = createMockRequest(params);
-      routeModule.POST(mockRequest, { params: Promise.resolve(params) });
-    });
 
     it('should return 401 when unauthenticated', async () => {
       (requireAuth as any).mockRejectedValue(new Error('UNAUTHORIZED'));
@@ -189,8 +188,8 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
     });
 
     it('should return 404 when collection request not found', async () => {
-      const mockSingle = vi.fn().mockResolvedValue({ data: null, error: { message: 'Not found' } });
-      const mockEq = vi.fn().mockReturnValue({ single: mockSingle });
+      const mockSingle = vi.fn().mockResolvedValue({ data: null, error: null });
+      const mockEq = vi.fn().mockReturnValue({ maybeSingle: mockSingle });
       const mockSelect = vi.fn().mockReturnValue({ eq: mockEq });
       const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
       (supabaseAdmin.from as any).mockImplementation(mockFrom);
@@ -204,9 +203,9 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
       expect(json.error).toBe('Collection request not found');
     });
 
-    it('should return 404 when database error on fetch', async () => {
+    it('should return 500 and stop processing when database lookup fails', async () => {
       const mockSingle = vi.fn().mockResolvedValue({ data: null, error: { message: 'DB error', code: 'ERROR' } });
-      const mockEq = vi.fn().mockReturnValue({ single: mockSingle });
+      const mockEq = vi.fn().mockReturnValue({ maybeSingle: mockSingle });
       const mockSelect = vi.fn().mockReturnValue({ eq: mockEq });
       const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
       (supabaseAdmin.from as any).mockImplementation(mockFrom);
@@ -216,8 +215,10 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
       const response = await routeModule.POST(mockRequest, { params: Promise.resolve(params) });
       const json = await response.json();
 
-      expect(response.status).toBe(404);
-      expect(json.error).toBe('Collection request not found');
+      expect(response.status).toBe(500);
+      expect(json.error).toBe('Could not process collection documents');
+      expect(processCollectionRequestDocuments).not.toHaveBeenCalled();
+      expect(updateRegisterForDocument).not.toHaveBeenCalled();
     });
   });
 
@@ -231,7 +232,7 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
         data: { realm_id: 'different_realm' }, 
         error: null 
       });
-      const mockEq = vi.fn().mockReturnValue({ single: mockSingle });
+      const mockEq = vi.fn().mockReturnValue({ maybeSingle: mockSingle });
       const mockSelect = vi.fn().mockReturnValue({ eq: mockEq });
       const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
       (supabaseAdmin.from as any).mockImplementation(mockFrom);
@@ -256,7 +257,7 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
     it('should return 200 with results on successful processing', async () => {
       const mockCollectionRequest = { realm_id: mockRealmId };
       const mockSingle = vi.fn().mockResolvedValue({ data: mockCollectionRequest, error: null });
-      const mockEq = vi.fn().mockReturnValue({ single: mockSingle });
+      const mockEq = vi.fn().mockReturnValue({ maybeSingle: mockSingle });
       const mockSelect = vi.fn().mockReturnValue({ eq: mockEq });
       const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
       (supabaseAdmin.from as any).mockImplementation(mockFrom);
@@ -327,7 +328,7 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
     it('should handle empty results array', async () => {
       const mockCollectionRequest = { realm_id: mockRealmId };
       const mockSingle = vi.fn().mockResolvedValue({ data: mockCollectionRequest, error: null });
-      const mockEq = vi.fn().mockReturnValue({ single: mockSingle });
+      const mockEq = vi.fn().mockReturnValue({ maybeSingle: mockSingle });
       const mockSelect = vi.fn().mockReturnValue({ eq: mockEq });
       const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
       (supabaseAdmin.from as any).mockImplementation(mockFrom);
@@ -352,12 +353,27 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
       
       const mockCollectionRequest = { realm_id: mockRealmId };
       const mockSingle = vi.fn().mockResolvedValue({ data: mockCollectionRequest, error: null });
-      const mockEq = vi.fn().mockReturnValue({ single: mockSingle });
+      const mockEq = vi.fn().mockReturnValue({ maybeSingle: mockSingle });
       const mockSelect = vi.fn().mockReturnValue({ eq: mockEq });
       const mockFrom = vi.fn().mockReturnValue({ select: mockSelect });
       (supabaseAdmin.from as any).mockImplementation(mockFrom);
     });
 
+    it('withholds private exception details from responses and logs', async () => {
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        vi.mocked(processCollectionRequestDocuments).mockRejectedValue(new Error('PRIVATE_SECRET not found'));
+        const response = await routeModule.POST(createMockRequest({ id: validCollectionRequestId }), {
+          params: Promise.resolve({ id: validCollectionRequestId }),
+        });
+        expect(response.status).toBe(500);
+        expect(await response.json()).toEqual({ error: 'Could not process collection documents' });
+        expect(log).toHaveBeenCalledWith('Collection request processing failed');
+        expect(JSON.stringify(log.mock.calls)).not.toContain('PRIVATE_SECRET');
+      } finally {
+        log.mockRestore();
+      }
+    });
     it('should return 500 when processCollectionRequestDocuments throws', async () => {
       (processCollectionRequestDocuments as any).mockRejectedValue(new Error('Processing failed'));
       (updateRegisterForDocument as any).mockResolvedValue(undefined);
@@ -368,7 +384,7 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
       const json = await response.json();
 
       expect(response.status).toBe(500);
-      expect(json.error).toBe('Processing failed');
+      expect(json.error).toBe('Could not process collection documents');
     });
 
     it('should return 404 when processCollectionRequestDocuments throws "not found" error', async () => {
@@ -408,7 +424,7 @@ describe('app/api/collection-requests/[id]/process/route.ts - POST', () => {
       const json = await response.json();
 
       expect(response.status).toBe(500);
-      expect(json.error).toBe('Database update failed');
+      expect(json.error).toBe('Could not process collection documents');
     });
 
     it('should return 404 when updateRegisterForDocument throws "not found" error', async () => {
