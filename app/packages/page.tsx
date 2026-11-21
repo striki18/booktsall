@@ -85,32 +85,33 @@ export default function PackageHistoryPage() {
       <WorkspaceHeader />
       <main className="workspaceContent">
       <section className="mx-auto max-w-6xl">
-        <header className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-[#d9dde5] pb-6">
+        <header className="mb-8 flex flex-wrap items-end justify-between gap-6 border-b border-[#e4e7ec] pb-7">
           <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[#3159c9]">Package library</p>
             <h1 className="mt-3 text-3xl font-semibold">{financeMode ? 'Evidence package history' : 'Past reports and packages'}</h1>
-            <p className="mt-2 text-sm leading-6 text-[#5d6675]">{financeMode ? 'Find a past package, check what it contains, and download it again.' : 'Open a past report, see what went into it, or download it again.'}</p>
+            <p className="mt-3 text-base leading-7 text-[#667085]">{financeMode ? 'Find a past package, check what it contains, and download it again.' : 'Open a past report, see what went into it, or download it again.'}</p>
           </div>
-          <div className="flex flex-wrap gap-2"><button type="button" onClick={() => window.location.assign('/quickbooks?section=generate')} className="h-11 rounded-lg bg-[#3e6ae1] px-4 font-semibold text-white shadow-sm hover:bg-[#3159c9]">Create package</button><button type="button" onClick={() => void loadHistory()} disabled={loading} className="h-11 rounded-lg border border-[#cfd4dc] bg-white px-4 font-semibold text-[#171a20] hover:border-[#3e6ae1] disabled:opacity-60">{loading ? 'Loading…' : 'Refresh'}</button></div>
+          <div className="flex flex-wrap gap-2"><button type="button" onClick={() => window.location.assign('/quickbooks?section=generate')} className="h-11 rounded-[9px] bg-[#3e6ae1] px-5 font-semibold text-white shadow-[0_4px_12px_rgba(62,106,225,.18)] hover:-translate-y-px hover:bg-[#2f56c7]">Create package</button><button type="button" onClick={() => void loadHistory()} disabled={loading} className="h-11 rounded-[9px] border border-[#d0d5dd] bg-white px-4 font-semibold text-[#344054] hover:border-[#98a2b3] disabled:opacity-60">{loading ? 'Loading…' : 'Refresh'}</button></div>
         </header>
 
         {error ? <p role="alert" className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</p> : null}
-        {loading && packages.length === 0 ? <p className="rounded border border-[#d9dde5] bg-white p-6 text-sm">Loading package history…</p> : null}
-        {!loading && packages.length === 0 ? <p className="rounded border border-[#d9dde5] bg-white p-6 text-sm text-[#5d6675]">No package runs are available for this company.</p> : null}
+        {loading && packages.length === 0 ? <p className="rounded-2xl border border-[#e4e7ec] bg-white p-6 text-sm shadow-[0_1px_3px_rgba(16,24,40,.04)]">Loading package history…</p> : null}
+        {!loading && packages.length === 0 ? <p className="rounded-2xl border border-[#e4e7ec] bg-white p-8 text-sm text-[#667085] shadow-[0_1px_3px_rgba(16,24,40,.04)]">No package runs are available for this company.</p> : null}
 
         <div className="grid gap-3">
           {packages.map(item => (
-            <article key={item.id} className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[#d9dde5] bg-white p-5">
+            <article key={item.id} className="flex flex-wrap items-center justify-between gap-5 rounded-2xl border border-[#e4e7ec] bg-white p-6 shadow-[0_1px_3px_rgba(16,24,40,.04)] transition hover:border-[#cbd5ed] hover:shadow-[0_12px_28px_rgba(16,24,40,.07)]">
               <div className="min-w-64 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="font-semibold">{item.filename || (item.engagement_id ? `Engagement package ${item.engagement_id}` : 'Evidence package')}</h2>
                   <span className={`rounded-full px-3 py-1 text-xs font-semibold ${item.status === 'partial' ? 'bg-amber-100 text-amber-900' : item.status === 'failed' ? 'bg-red-100 text-red-800' : item.status === 'complete' || item.status === 'ready' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-700'}`}>{item.status}</span>
                 </div>
-                <p className="mt-1 text-sm text-[#5d6675]">{item.source_type === 'qbo_period' ? 'QuickBooks date range' : item.source_type === 'engagement' ? 'Engagement evidence' : 'Historical engagement package'} · {new Date(item.created_at).toLocaleString()}</p>
+                <p className="mt-2 text-sm text-[#667085]">{item.source_type === 'qbo_period' ? 'QuickBooks date range' : item.source_type === 'engagement' ? 'Engagement evidence' : 'Historical engagement package'} · {new Date(item.created_at).toLocaleString()}</p>
                 {item.start_date || item.end_date ? <p className="mt-1 text-xs text-[#5d6675]">{item.start_date || 'Start unknown'} to {item.end_date || 'End unknown'} · Version {item.package_version || 1}</p> : item.package_version ? <p className="mt-1 text-xs text-[#5d6675]">Version {item.package_version}</p> : null}
                 {item.previous_package_id ? <p className="mt-1 text-xs text-[#5d6675]">Previous version: {item.previous_package_id}</p> : null}
                 {item.error_summary ? <p className="mt-2 text-sm text-amber-900">{item.error_summary}</p> : null}
               </div>
-              <button type="button" disabled={!canDownload(item) || downloadingId === item.id} onClick={() => void downloadPackage(item)} className="h-11 rounded-lg border border-[#c8ced8] bg-white px-4 text-sm font-semibold text-[#171a20] hover:border-[#3e6ae1] hover:text-[#3159c9] disabled:cursor-not-allowed disabled:opacity-50">{downloadingId === item.id ? 'Preparing…' : 'Download ZIP'}</button>
+              <button type="button" disabled={!canDownload(item) || downloadingId === item.id} onClick={() => void downloadPackage(item)} className="h-11 rounded-[9px] border border-[#d0d5dd] bg-white px-4 text-sm font-semibold text-[#344054] hover:border-[#3e6ae1] hover:text-[#3159c9] disabled:cursor-not-allowed disabled:opacity-50">{downloadingId === item.id ? 'Preparing…' : 'Download ZIP'}</button>
             </article>
           ))}
         </div>

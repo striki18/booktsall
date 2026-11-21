@@ -18,20 +18,20 @@ export function DocumentToolbar({
   onFilterChange,
 }: DocumentToolbarProps) {
   return (
-    <section className="grid gap-4 rounded-md border border-[#d9dde5] bg-white p-4 sm:grid-cols-[1fr_220px_auto] sm:items-end">
+    <section className="grid gap-4 rounded-2xl border border-[#e4e7ec] bg-white p-4 shadow-[0_1px_3px_rgba(16,24,40,.04)] sm:grid-cols-[1fr_220px_auto] sm:items-end">
       <label className="block">
-        <span className="text-sm font-semibold text-[#172033]">Search</span>
+        <span className="text-sm font-semibold text-[#344054]">Search</span>
         <input
           type="search"
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder="Search by file name"
-          className="mt-2 h-11 w-full rounded-lg border border-[#c8ced8] bg-white px-3 text-sm outline-none transition placeholder:text-[#8f98a7] focus:border-[#3e6ae1] focus:ring-4 focus:ring-[#eef3ff]"
+          className="mt-2 h-11 w-full rounded-[9px] border border-[#d0d5dd] bg-white px-3 text-sm outline-none transition placeholder:text-[#98a2b3] focus:border-[#3e6ae1] focus:ring-4 focus:ring-[#eef3ff]"
         />
       </label>
 
       <label className="block">
-        <span className="text-sm font-semibold text-[#172033]">
+        <span className="text-sm font-semibold text-[#344054]">
           File type
         </span>
         <select
@@ -39,7 +39,7 @@ export function DocumentToolbar({
           onChange={(event) =>
             onFilterChange(event.target.value as FileTypeFilter)
           }
-          className="mt-2 h-11 w-full rounded-lg border border-[#c8ced8] bg-white px-3 text-sm outline-none transition focus:border-[#3e6ae1] focus:ring-4 focus:ring-[#eef3ff]"
+          className="mt-2 h-11 w-full rounded-[9px] border border-[#d0d5dd] bg-white px-3 text-sm outline-none transition focus:border-[#3e6ae1] focus:ring-4 focus:ring-[#eef3ff]"
         >
           {fileTypeFilters.map((option) => (
             <option key={option} value={option}>
@@ -49,9 +49,9 @@ export function DocumentToolbar({
         </select>
       </label>
 
-      <div className="rounded-md border border-[#e3e7ed] px-4 py-3 text-sm text-[#5d6675]">
-        <span className="font-semibold text-[#172033]">{visibleCount}</span> of{" "}
-        <span className="font-semibold text-[#172033]">{totalCount}</span>{" "}
+      <div className="rounded-[9px] border border-[#e4e7ec] bg-[#f8f9fb] px-4 py-3 text-sm text-[#667085]">
+        <span className="font-semibold text-[#101828]">{visibleCount}</span> of{" "}
+        <span className="font-semibold text-[#101828]">{totalCount}</span>{" "}
         documents
       </div>
     </section>

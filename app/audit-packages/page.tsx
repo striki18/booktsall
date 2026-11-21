@@ -21,22 +21,22 @@ export default function AuditPackagesPage() {
       <WorkspaceHeader />
       <main className="workspaceContent">
       <section className="mx-auto max-w-6xl">
-        <header className="mb-8 border-b border-[#d9dde5] pb-6">
-          <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[#6c7973]">Coming into focus</p>
+        <header className="mb-8 border-b border-[#e4e7ec] pb-7">
+          <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[#3159c9]">Purpose-built exports</p>
           <h1 className="mt-3 text-3xl font-semibold">Audit packages</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#5d6675]">
+          <p className="mt-3 max-w-2xl text-base leading-7 text-[#667085]">
             Build an organized evidence package for the kind of audit you’re preparing for. We’ll shape the checklists and requests with you.
           </p>
         </header>
 
         <div className="grid gap-4 md:grid-cols-3">
           {placeholderSections.map((section) => (
-            <section key={section.title} className="min-h-48 rounded-lg border border-dashed border-[#c8ced8] bg-white p-5">
-              <span className="inline-flex rounded-full bg-[#eef1f5] px-3 py-1 text-xs font-semibold uppercase tracking-wide text-[#5d6675]">
-                Placeholder
+            <section key={section.title} className="min-h-56 rounded-2xl border border-[#e4e7ec] bg-white p-6 shadow-[0_1px_3px_rgba(16,24,40,.04)]">
+              <span className="inline-flex rounded-full bg-[#eef3ff] px-3 py-1 text-xs font-semibold uppercase tracking-wide text-[#3159c9]">
+                Planned
               </span>
               <h2 className="mt-5 text-lg font-semibold">{section.title}</h2>
-              <p className="mt-2 text-sm leading-6 text-[#5d6675]">{section.description}</p>
+              <p className="mt-3 text-sm leading-6 text-[#667085]">{section.description}</p>
             </section>
           ))}
         </div>

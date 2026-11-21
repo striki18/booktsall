@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { uploadEvidenceFiles, type BulkUploadResult } from '@/lib/evidence-bulk-upload';
+import { ZevidtLogo } from '@/app/quickbooks/icons';
 import styles from './page.module.css';
 
 interface InboxInfo {
@@ -148,10 +149,7 @@ export default function InboxPage({
   return (
     <div className={styles.container}>
       <div className={styles.card}>
-        <div className="mb-7 flex items-center justify-center gap-2 text-xl font-semibold tracking-[-.05em] text-[#17231f]">
-          <span className="grid size-8 place-items-center rounded-xl bg-[#176b52] text-lg font-bold text-white">z</span>
-          <span>zevidt</span>
-        </div>
+        <div className="mb-8 flex justify-center"><ZevidtLogo /></div>
         <div className={styles.header}>
           <h1>Send your documents</h1>
           <p className={styles.subtitle}>

@@ -330,6 +330,7 @@ export default function QuickbooksPage() {
   const [activityMinAmount, setActivityMinAmount] = useState('');
   const [activityMaxAmount, setActivityMaxAmount] = useState('');
   const [activitySort, setActivitySort] = useState<'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc' | 'name_asc'>('date_desc');
+  const [activityFiltersOpen, setActivityFiltersOpen] = useState(false);
 
   // Generation state
   const [generating, setGenerating] = useState(false);
@@ -461,22 +462,33 @@ export default function QuickbooksPage() {
 
   const fetchEvidenceRegister = useCallback(async () => {
     if (!realmId || !registerStartDate || !registerEndDate) return [];
-    const response = await fetch('/api/evidence/qbo-register', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ realmId, startDate: registerStartDate, endDate: registerEndDate }),
-    });
+    const params = new URLSearchParams({ realmId, startDate: registerStartDate, endDate: registerEndDate });
+    const response = await fetch(`/api/evidence/qbo-register?${params.toString()}`, { cache: 'no-store' });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || 'Unable to load the evidence register');
-    if (!Array.isArray(body.register)) throw new Error('The evidence register response was invalid');
-    return body.register as EvidenceRegisterViewRow[];
+    if (!Array.isArray(body)) throw new Error('The evidence register response was invalid');
+    return body as EvidenceRegisterViewRow[];
   }, [realmId, registerStartDate, registerEndDate]);
 
   const loadEvidenceRegister = useCallback(async () => {
     if (!realmId || !registerStartDate || !registerEndDate) return;
-    setEvidenceLoading(true);
+    const cacheKey = `zevidt:register:${realmId}:${registerStartDate}:${registerEndDate}`;
+    let restored = false;
+    try {
+      const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || 'null') as { savedAt?: number; rows?: EvidenceRegisterViewRow[] } | null;
+      if (cached?.savedAt && Date.now() - cached.savedAt < 60_000 && Array.isArray(cached.rows)) {
+        setEvidenceRows(cached.rows);
+        restored = true;
+      }
+    } catch {
+      window.sessionStorage.removeItem(cacheKey);
+    }
+    setEvidenceLoading(!restored);
     setEvidenceError(null);
     try {
-      setEvidenceRows(await fetchEvidenceRegister());
+      const rows = await fetchEvidenceRegister();
+      setEvidenceRows(rows);
+      window.sessionStorage.setItem(cacheKey, JSON.stringify({ savedAt: Date.now(), rows }));
     } catch (cause) {
       setEvidenceError(cause instanceof Error ? cause.message : 'Unable to load the evidence register');
       setEvidenceRows([]);
@@ -487,8 +499,7 @@ export default function QuickbooksPage() {
 
   const selectWorkspaceSection = useCallback((section: NavSection) => {
     setActiveSection(section);
-    if (section === 'evidence' && connectionStatus === 'connected' && realmId) void loadEvidenceRegister();
-  }, [connectionStatus, realmId, loadEvidenceRegister]);
+  }, []);
 
   useEffect(() => {
     if (activeSection === 'requirements' && authStatus === 'signed_in') void loadEvidenceRules();
@@ -576,34 +587,30 @@ export default function QuickbooksPage() {
     setWorkspaceActivityLoading(true);
     setWorkspaceTransactionError(null);
     setWorkspaceAttachableError(null);
-    setWorkspaceTransactions([]);
-    setWorkspaceAttachables([]);
-    try {
-      const response = await fetch(
+    const transactionsRequest = fetch(
         `/api/quickbooks/transactions?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`,
         { cache: 'no-store' },
-      );
+      ).then(async (response) => {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Could not load QuickBooks transactions.');
       if (!Array.isArray(body)) throw new Error('QuickBooks returned an unexpected transaction response.');
-      setWorkspaceTransactions(body);
-    } catch (error) {
-      setWorkspaceTransactionError(error instanceof Error ? error.message : 'Could not load QuickBooks transactions.');
-    }
-
-    try {
-      const response = await fetch('/api/quickbooks/attachables', { cache: 'no-store' });
+      return body as WorkspaceTransaction[];
+    });
+    const attachablesRequest = fetch('/api/quickbooks/attachables', { cache: 'no-store' }).then(async (response) => {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Could not load linked QuickBooks files.');
       if (!Array.isArray(body)) throw new Error('QuickBooks returned an unexpected file response.');
-      setWorkspaceAttachables(body);
-    } catch (error) {
-      setWorkspaceAttachableError(error instanceof Error ? error.message : 'Could not load linked QuickBooks files.');
-    } finally {
-      setWorkspaceActivityLoading(false);
-      setWorkspaceActivityLoaded(true);
-      setWorkspaceActivityUpdatedAt(new Date().toISOString());
-    }
+      return body as WorkspaceAttachable[];
+    });
+
+    const [transactionsResult, attachablesResult] = await Promise.allSettled([transactionsRequest, attachablesRequest]);
+    if (transactionsResult.status === 'fulfilled') setWorkspaceTransactions(transactionsResult.value);
+    else setWorkspaceTransactionError(transactionsResult.reason instanceof Error ? transactionsResult.reason.message : 'Could not load QuickBooks transactions.');
+    if (attachablesResult.status === 'fulfilled') setWorkspaceAttachables(attachablesResult.value);
+    else setWorkspaceAttachableError(attachablesResult.reason instanceof Error ? attachablesResult.reason.message : 'Could not load linked QuickBooks files.');
+    setWorkspaceActivityLoading(false);
+    setWorkspaceActivityLoaded(true);
+    setWorkspaceActivityUpdatedAt(new Date().toISOString());
   }, [realmId, startDate, endDate]);
 
   // Initialize on mount
@@ -1030,9 +1037,17 @@ export default function QuickbooksPage() {
           >
             {workspaceActivityLoading ? 'Loading…' : 'Refresh activity'}
           </button>
+          {allTransactions.length > 0 ? <button
+            type="button"
+            className={styles.btn + ' ' + styles.btnSecondary}
+            aria-expanded={activityFiltersOpen}
+            onClick={() => setActivityFiltersOpen((open) => !open)}
+          >
+            {activityFiltersOpen ? 'Hide filters' : 'Filter & sort'}
+          </button> : null}
         </form>
 
-        {allTransactions.length > 0 ? <div className={styles.activityFilterBar} aria-label="Filter and sort transactions">
+        {allTransactions.length > 0 && activityFiltersOpen ? <div className={styles.activityFilterBar} aria-label="Filter and sort transactions">
           <label className={styles.activitySearchField}><span>Search</span><input type="search" value={activitySearch} onChange={(event) => setActivitySearch(event.target.value)} placeholder="Name, number, type, or ID" /></label>
           <label><span>Type</span><select value={activityType} onChange={(event) => setActivityType(event.target.value)}><option value="ALL">All types</option>{transactionTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
           <label><span>Documents</span><select value={activityFileStatus} onChange={(event) => setActivityFileStatus(event.target.value as 'ALL' | 'WITH_FILES' | 'WITHOUT_FILES')}><option value="ALL">All transactions</option><option value="WITH_FILES">With documents</option><option value="WITHOUT_FILES">Without documents</option></select></label>
@@ -1096,7 +1111,7 @@ export default function QuickbooksPage() {
                             </details>
                           )}
                         </td>
-                        <td>{qboUrl ? <a className={styles.activityQboLink} href={qboUrl} target="_blank" rel="noopener noreferrer">Open in QBO ↗</a> : '—'}</td>
+                        <td>{qboUrl ? <a className={styles.activityQboLink} href={qboUrl} target="_blank" rel="noopener noreferrer">Open in QBO</a> : '—'}</td>
                       </tr>
                     );
                   })}
@@ -1144,13 +1159,13 @@ export default function QuickbooksPage() {
         </section>
 
         <section className={styles.homeAttention} aria-labelledby="attention-title">
-          <div className={styles.homeSectionHeading}><div><span className={styles.homeEyebrow}>PRIORITY</span><h2 id="attention-title">Needs attention</h2></div><button className={styles.btn + ' ' + styles.btnLink} onClick={() => selectWorkspaceSection('evidence')}>View all transactions →</button></div>
+          <div className={styles.homeSectionHeading}><div><span className={styles.homeEyebrow}>PRIORITY</span><h2 id="attention-title">Needs attention</h2></div><button className={styles.btn + ' ' + styles.btnLink} onClick={() => selectWorkspaceSection('evidence')}>View all transactions</button></div>
           {evidenceLoading ? <p className={styles.activityEmpty}>Loading your workspace…</p> : attentionRows.length ? <div className={styles.homeAttentionList}>{attentionRows.map((row, index) => <button type="button" key={String(row.id ?? `${row.qboTxnId}-${index}`)} onClick={() => { setSelectedEvidenceRow(row); selectWorkspaceSection('evidence'); }}>
             <span className={`${styles.registerStatus} ${styles[`registerStatus_${row.registerState}`]}`}>{statusCards.find((status) => status.state === row.registerState)?.label}</span>
             <strong>{row.qboTxnVendor || row.qboTxnType || 'Unlinked document'}</strong>
             <span>{row.qboTxnDocNumber || row.attachmentFilename || 'No reference'}</span>
             <span>{row.qboTxnAmount == null ? '—' : row.qboTxnAmount.toLocaleString()}</span>
-            <span aria-hidden="true">→</span>
+            <span className={styles.homeAttentionAction}>Review</span>
           </button>)}</div> : <p className={styles.activityEmpty}>{connectionStatus === 'connected' ? 'Nothing needs attention in this date range.' : 'Connect QuickBooks to load your workspace.'}</p>}
         </section>
 
@@ -1454,7 +1469,7 @@ export default function QuickbooksPage() {
                       <td>{row.qboTxnVendor || '—'}</td>
                       <td>{row.qboTxnAmount == null ? '—' : `${company?.CompanyInfo?.Currency ? `${company.CompanyInfo.Currency} ` : ''}${row.qboTxnAmount.toLocaleString()}`}</td>
                       <td>{row.attachmentFilename || 'No document'}</td>
-                      <td>{qboUrl ? <a className={styles.activityQboLink} href={qboUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>Open transaction ↗</a> : '—'}</td>
+                      <td>{qboUrl ? <a className={styles.activityQboLink} href={qboUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>Open transaction</a> : '—'}</td>
                     </tr>;
                   })}</tbody>
                 </table>
@@ -1463,7 +1478,7 @@ export default function QuickbooksPage() {
             {selectedEvidenceRow ? <aside className={styles.evidenceDrawer} aria-label="Transaction details">
               <div className={styles.evidenceDrawerHeader}><div><span className={styles.homeEyebrow}>TRANSACTION DETAILS</span><h3>{selectedEvidenceRow.qboTxnVendor || selectedEvidenceRow.qboTxnType || 'Evidence item'}</h3></div><button type="button" className={styles.btn + ' ' + styles.btnGhost} aria-label="Close details" onClick={() => setSelectedEvidenceRow(null)}>×</button></div>
               <dl><div><dt>Status</dt><dd><span className={`${styles.registerStatus} ${styles[`registerStatus_${selectedEvidenceRow.registerState}`]}`}>{stateLabels[selectedEvidenceRow.registerState]}</span></dd></div><div><dt>Transaction</dt><dd>{selectedEvidenceRow.qboTxnType || '—'} {selectedEvidenceRow.qboTxnDocNumber || ''}</dd></div><div><dt>Date</dt><dd>{selectedEvidenceRow.qboTxnDate || '—'}</dd></div><div><dt>Amount</dt><dd>{selectedEvidenceRow.qboTxnAmount == null ? '—' : selectedEvidenceRow.qboTxnAmount.toLocaleString()}</dd></div><div><dt>Evidence</dt><dd>{selectedEvidenceRow.attachmentFilename || 'No document attached'}</dd></div></dl>
-              <div className={styles.evidenceDrawerActions}><button type="button" className={styles.btn + ' ' + styles.btnPrimary} onClick={() => window.location.assign('/documents')}>Upload document</button>{buildQboTransactionUrl(selectedEvidenceRow.qboTxnType ?? null, selectedEvidenceRow.qboTxnId ?? selectedEvidenceRow.attachedQboTxnId ?? null) ? <a className={styles.btn + ' ' + styles.btnSecondary} href={buildQboTransactionUrl(selectedEvidenceRow.qboTxnType ?? null, selectedEvidenceRow.qboTxnId ?? selectedEvidenceRow.attachedQboTxnId ?? null) ?? '#'} target="_blank" rel="noopener noreferrer">Open in QuickBooks ↗</a> : null}</div>
+              <div className={styles.evidenceDrawerActions}><button type="button" className={styles.btn + ' ' + styles.btnPrimary} onClick={() => window.location.assign('/documents')}>Upload document</button>{buildQboTransactionUrl(selectedEvidenceRow.qboTxnType ?? null, selectedEvidenceRow.qboTxnId ?? selectedEvidenceRow.attachedQboTxnId ?? null) ? <a className={styles.btn + ' ' + styles.btnSecondary} href={buildQboTransactionUrl(selectedEvidenceRow.qboTxnType ?? null, selectedEvidenceRow.qboTxnId ?? selectedEvidenceRow.attachedQboTxnId ?? null) ?? '#'} target="_blank" rel="noopener noreferrer">Open in QuickBooks</a> : null}</div>
             </aside> : null}
           </>
         ) : !evidenceLoading && connectionStatus === 'connected' && !evidenceError ? <p className={styles.activityEmpty}>Choose a date range and load the register.</p> : null}
@@ -1875,7 +1890,7 @@ export default function QuickbooksPage() {
         onSelectSection={selectWorkspaceSection}
       />
       <main className={styles.main} role="main">
-        <header className={styles.header}>
+        {activeSection !== 'overview' ? <header className={styles.header}>
           <div className={styles.headerLeft}>
             <h1 className={styles.pageTitle}>
               {getSectionLabel(activeSection, financeMode)}
@@ -1898,7 +1913,7 @@ export default function QuickbooksPage() {
               <SettingsIcon />
             </button>
           </div>
-        </header>
+        </header> : null}
 
         {/* Connection error alert */}
         {connectionError && connectionStatus !== 'connected' && authStatus !== 'signed_out' && (

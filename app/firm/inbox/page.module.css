@@ -328,3 +328,53 @@
     display: none;
   }
 }
+
+/* Unified Zevidt collection workspace. */
+.container { max-width: 1180px; padding: 0; }
+.loading { border: 1px solid #e4e7ec; border-radius: 16px; background: #fff; color: #667085; }
+.header { margin-bottom: 32px; padding-bottom: 26px; border-bottom: 1px solid #e4e7ec; }
+.header::before { display: block; margin-bottom: 12px; color: #3159c9; font-size: 13px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; content: 'SHARED COLLECTION'; }
+.header h1 { margin: 0; color: #101828; font-size: clamp(36px, 4vw, 52px); font-weight: 650; letter-spacing: -.05em; }
+.subtitle { max-width: 720px; margin-top: 12px; color: #667085; font-size: 16px; line-height: 1.7; }
+.error { border: 1px solid #f0c5c1; border-radius: 12px; background: #fff6f5; color: #b42318; }
+.retryBtn { min-height: 42px; border-radius: 9px; background: #3e6ae1; padding: 0 16px; color: #fff; font: inherit; font-size: 14px; font-weight: 650; box-shadow: 0 4px 12px rgba(62,106,225,.18); }
+.retryBtn:hover { background: #2f56c7; opacity: 1; }
+.section { margin-bottom: 34px; }
+.section h2 { margin-bottom: 14px; padding: 0; border: 0; color: #101828; font-size: 21px; font-weight: 650; letter-spacing: -.03em; }
+.empty { border: 1px solid #e4e7ec; border-radius: 16px; background: #fff; padding: 32px; color: #667085; font-style: normal; box-shadow: 0 1px 3px rgba(16,24,40,.04); }
+.inboxList,
+.requestList { gap: 14px; }
+.inboxCard,
+.requestCard { border: 1px solid #e4e7ec; border-radius: 16px; background: #fff; box-shadow: 0 1px 3px rgba(16,24,40,.04); }
+.inboxCard { padding: 24px; }
+.inboxInfo { gap: 14px; }
+.inboxRealmId,
+.inboxToken,
+.inboxLink,
+.inboxCreated { color: #667085; font-size: 13px; }
+.inboxRealmId code,
+.inboxToken code,
+.requestRealm code,
+.detailRow code,
+.txnId { border-radius: 7px; background: #f2f4f7; color: #344054; }
+.inboxLinkUrl { color: #3159c9; font-size: 14px; font-weight: 600; }
+.requestHeader { min-height: 82px; padding: 18px 22px; }
+.requestHeader:hover { background: #f8faff; }
+.requestRealm { color: #344054; font-size: 14px; }
+.requestMeta { gap: 12px; }
+.statusBadge { border-radius: 999px; font-size: 12px; font-weight: 650; }
+.statusRequested { background: #fff4e5; color: #a15c00; }
+.statusUploaded { background: #ecfdf3; color: #087a55; }
+.statusDefault { background: #f2f4f7; color: #475467; }
+.requestDate { color: #667085; font-size: 13px; }
+.requestToggle { flex: 0 0 auto; border: 1px solid #d0d5dd; border-radius: 8px; padding: 7px 10px; color: #344054; font-size: 12px; font-weight: 650; }
+.requestExpanded { padding: 22px; border-top-color: #edf0f4; }
+.docTable th { background: #f8f9fb; color: #667085; font-size: 11px; letter-spacing: .07em; text-transform: uppercase; }
+.docTable td { border-top-color: #edf0f4; color: #344054; font-size: 14px; }
+
+@media (max-width: 640px) {
+  .container { padding: 0; }
+  .requestHeader { align-items: flex-start; gap: 14px; }
+  .requestToggle { white-space: nowrap; }
+  .inboxCard { padding: 18px; }
+}

@@ -207,7 +207,7 @@ export default function FirmInboxPage() {
                     </div>
                   </div>
                   <div className={styles.requestToggle}>
-                    {expandedRequestId === request.id ? '▲' : '▼'}
+                    {expandedRequestId === request.id ? 'Hide details' : 'Show details'}
                   </div>
                 </div>
 

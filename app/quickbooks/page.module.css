@@ -1823,3 +1823,137 @@ body {
   .main,
   .main.withSidebarOffset { width: calc(100% - 28px); }
 }
+
+/* Unified Zevidt workspace — authoritative visual layer. */
+.container {
+  --color-text-primary: #1d2939;
+  --color-text-secondary: #667085;
+  --color-text-tertiary: #98a2b3;
+  --color-border-subtle: #e4e7ec;
+  --color-border-default: #d0d5dd;
+  --color-bg-canvas: #f7f8fa;
+  --color-bg-elevated: #fff;
+  --color-bg-subtle: #f2f4f7;
+  --color-bg-hover: #f8f9fb;
+  --color-brand-primary: #3e6ae1;
+  --color-brand-primary-hover: #2f56c7;
+  --color-brand-primary-active: #2447ad;
+  --color-brand-primary-light: #eef3ff;
+  background: #f7f8fa;
+}
+
+.main,
+.main.withSidebarOffset { width: min(1280px, calc(100% - 64px)); padding: 42px 0 96px; }
+.header { margin: 0 0 28px; padding: 0 0 24px; border-bottom: 1px solid #e4e7ec; }
+.pageTitle { color: #101828; font-size: clamp(36px, 4vw, 52px); font-weight: 650; letter-spacing: -.05em; }
+.pageSubtitle { max-width: 620px; margin-top: 8px; color: #667085; font-size: 15px; }
+.connectionIndicator { min-height: 42px; border: 1px solid #e4e7ec; border-radius: 10px; background: #fff; padding: 8px 12px; box-shadow: 0 1px 2px rgba(16,24,40,.03); }
+.companyName { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.card { margin-bottom: 20px; border: 1px solid #e4e7ec; border-radius: 16px; background: #fff; padding: 28px; box-shadow: 0 1px 3px rgba(16,24,40,.04); }
+.cardTitle { color: #101828; font-size: 22px; font-weight: 650; letter-spacing: -.035em; }
+.btn { min-height: 44px; border-radius: 9px; padding: 10px 16px; font-size: 14px; font-weight: 650; }
+.btnPrimary { border-color: #3e6ae1; background: #3e6ae1; box-shadow: 0 4px 12px rgba(62,106,225,.18); }
+.btnPrimary:hover:not(:disabled) { border-color: #2f56c7; background: #2f56c7; transform: translateY(-1px); }
+.btnSecondary { border-color: #d0d5dd; background: #fff; color: #344054; box-shadow: 0 1px 2px rgba(16,24,40,.04); }
+.btnSecondary:hover:not(:disabled) { border-color: #98a2b3; background: #f9fafb; }
+.btnGhost { border-radius: 9px; }
+.btnLink { color: #3159c9; text-decoration: none; }
+
+.homeOverview { gap: 20px; }
+.homeIntro {
+  position: relative;
+  overflow: hidden;
+  align-items: center;
+  min-height: 230px;
+  border: 1px solid #dfe6fa;
+  border-radius: 20px;
+  background: linear-gradient(125deg, #fff 0%, #f5f8ff 62%, #e9efff 100%);
+  padding: clamp(30px, 5vw, 58px);
+  box-shadow: 0 18px 44px rgba(42,67,125,.08);
+}
+.homeIntro::after { position: absolute; right: -110px; bottom: -160px; width: 430px; height: 430px; border: 1px solid rgba(62,106,225,.14); border-radius: 50%; box-shadow: 0 0 0 52px rgba(62,106,225,.035), 0 0 0 104px rgba(62,106,225,.025); content: ''; }
+.homeIntro > * { position: relative; z-index: 1; }
+.homeEyebrow { margin-bottom: 10px; color: #3159c9; font-size: 12px; font-weight: 760; letter-spacing: .12em; }
+.homeIntro h2 { max-width: 790px; color: #101828; font-size: clamp(34px, 4.4vw, 58px); font-weight: 620; letter-spacing: -.06em; line-height: 1; }
+.homeIntro p { max-width: 660px; color: #667085; font-size: 17px; line-height: 1.6; }
+.homeIntro .btnLg { min-height: 48px; padding: 12px 20px; }
+
+.homeConnectionStrip { min-height: 60px; border-color: #e4e7ec; border-radius: 14px; padding: 10px 14px; color: #667085; font-size: 14px; box-shadow: 0 1px 2px rgba(16,24,40,.03); }
+.homeConnectionStrip strong { color: #1d2939; }
+.homeStatusGrid { gap: 14px; }
+.homeStatusCard { min-height: 136px; border-color: #e4e7ec; border-radius: 16px; padding: 20px; box-shadow: 0 1px 3px rgba(16,24,40,.035); }
+.homeStatusCard:hover { border-color: #aebff1; box-shadow: 0 14px 30px rgba(16,24,40,.08); transform: translateY(-2px); }
+.homeStatusCard span { color: #475467; font-size: 14px; }
+.homeStatusCard strong { color: #101828; font-size: 38px; font-weight: 640; }
+.homeStatusCard small { color: #98a2b3; font-size: 13px; }
+.homeAttention { border-color: #e4e7ec; border-radius: 16px; padding: 28px; box-shadow: 0 1px 3px rgba(16,24,40,.04); }
+.homeSectionHeading h2 { color: #101828; font-size: 22px; }
+.homeAttentionList > button { min-height: 64px; grid-template-columns: 140px minmax(160px, 1fr) minmax(100px, .7fr) 100px 64px; border-top-color: #edf0f4; color: #667085; font-size: 14px; }
+.homeAttentionList > button:hover { background: #f8faff; }
+.homeAttentionAction { justify-self: end; color: #3159c9 !important; font-size: 13px !important; font-weight: 650; }
+
+.activityCard { border: 1px solid #e4e7ec; background: #fff; }
+.activityDescription { color: #667085; font-size: 14px; }
+.activityUpdated { color: #98a2b3; font-size: 12px; }
+.activityFilters { gap: 10px; margin-top: 22px; }
+.activityDateField { gap: 7px; color: #475467; font-size: 13px; }
+.activityDateField input { min-height: 44px; border-color: #d0d5dd; border-radius: 9px; color: #1d2939; font-size: 14px; }
+.activityFilterBar { grid-template-columns: minmax(220px, 1.5fr) repeat(2, minmax(150px, .8fr)) repeat(2, minmax(110px, .55fr)) minmax(170px, .8fr) auto; gap: 12px; margin: 6px 0 18px; border-color: #e4e7ec; border-radius: 14px; background: #f8f9fb; padding: 16px; animation: filtersIn .14s ease-out; }
+@keyframes filtersIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.activityFilterBar label { gap: 7px; color: #475467; font-size: 12px; }
+.activityFilterBar input,
+.activityFilterBar select { min-height: 42px; border-color: #d0d5dd; border-radius: 9px; color: #1d2939; font-size: 13px; }
+.activitySummary { color: #667085; font-size: 13px; }
+.activityTableWrap { border-color: #e4e7ec; border-radius: 14px; }
+.activityTable th,
+.registerTable th { position: sticky; top: 0; z-index: 1; background: #f8f9fb; color: #667085; font-size: 11px; letter-spacing: .07em; }
+.activityTable td,
+.registerTable td { padding: 16px 14px; border-bottom-color: #edf0f4; color: #344054; font-size: 14px; vertical-align: middle; }
+.activityTable tbody tr:hover,
+.registerTable tbody tr:hover { background: #f8faff; }
+.activityQboLink { color: #3159c9; font-size: 13px; font-weight: 650; text-decoration: none; }
+.activityQboLink:hover { color: #2447ad; text-decoration: underline; text-underline-offset: 3px; }
+.noLinkedFile { color: #98a2b3; font-size: 13px; }
+.activityFileDetails summary { color: #087a55; font-size: 13px; }
+.activityEmpty,
+.activityError,
+.activityWarning { border-radius: 12px; padding: 15px 16px; font-size: 14px; }
+
+.registerStateCounts { gap: 12px; }
+.registerCount,
+.registerCountActive { min-height: 82px; border-color: #e4e7ec; border-radius: 14px; padding: 16px; }
+.registerCountActive { border-color: #3e6ae1; background: #3e6ae1; color: #fff; box-shadow: 0 8px 18px rgba(62,106,225,.16); }
+.registerCount strong,
+.registerCountActive strong { font-size: 28px; }
+.registerCount span,
+.registerCountActive span { font-size: 13px; }
+.registerStatus { padding: 6px 10px; font-size: 11px; }
+.evidenceDrawer { top: 72px; width: min(460px, 100vw); border-left-color: #e4e7ec; padding: 30px; box-shadow: -22px 0 64px rgba(16,24,40,.14); }
+.evidenceDrawerHeader h3 { color: #101828; }
+
+@media (max-width: 1100px) {
+  .activityFilterBar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .activityFilterBar .activitySearchField { grid-column: span 2; }
+}
+@media (max-width: 900px) {
+  .main, .main.withSidebarOffset { width: min(100% - 40px, 820px); }
+  .header { align-items: flex-start; flex-direction: column; }
+  .headerRight { width: 100%; justify-content: space-between; }
+  .homeAttentionList > button { grid-template-columns: 120px 1fr 70px; }
+  .homeAttentionList > button > span:nth-child(3),
+  .homeAttentionList > button > span:nth-child(4) { display: none; }
+}
+@media (max-width: 620px) {
+  .main, .main.withSidebarOffset { width: calc(100% - 28px); padding-top: 28px; }
+  .homeIntro { align-items: stretch; min-height: 0; padding: 30px 22px; }
+  .homeIntro h2 { font-size: 38px; }
+  .homeIntro p { font-size: 15px; }
+  .homeStatusGrid { gap: 10px; }
+  .homeStatusCard { min-height: 118px; padding: 15px; }
+  .homeAttention { padding: 20px; }
+  .activityFilterBar { grid-template-columns: 1fr; }
+  .activityFilterBar .activitySearchField { grid-column: auto; }
+  .activityFilters > button { width: auto; flex: 1 1 150px; }
+  .headerRight { align-items: stretch; flex-direction: column; }
+}

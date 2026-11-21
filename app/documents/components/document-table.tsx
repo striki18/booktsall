@@ -13,10 +13,10 @@ export function DocumentTable({
   onDelete,
 }: DocumentTableProps) {
   return (
-    <section className="overflow-hidden rounded-md border border-[#d9dde5] bg-white">
+    <section className="overflow-hidden rounded-2xl border border-[#e4e7ec] bg-white shadow-[0_1px_3px_rgba(16,24,40,.04)]">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[820px] border-collapse text-left text-sm">
-          <thead className="bg-[#f0f3f6] text-xs font-semibold uppercase tracking-[0.12em] text-[#5d6675]">
+          <thead className="bg-[#f8f9fb] text-xs font-semibold uppercase tracking-[0.1em] text-[#667085]">
             <tr>
               <th className="px-4 py-3">File Name</th>
               <th className="px-4 py-3">File Type</th>
@@ -30,7 +30,7 @@ export function DocumentTable({
             {documents.map((document) => (
               <tr
                 key={document.id}
-                className="border-t border-[#e3e7ed] text-[#263349]"
+                className="border-t border-[#edf0f4] text-[#344054] transition hover:bg-[#f8faff]"
               >
                 <td className="max-w-[280px] px-4 py-4">
                   <span className="block truncate font-semibold">
@@ -52,14 +52,14 @@ export function DocumentTable({
                     <button
                       type="button"
                       onClick={() => onView(document)}
-                      className="h-9 rounded-md border border-[#c8ced8] px-3 font-semibold text-[#172033] transition hover:border-[#8f9aaa] hover:bg-[#f6f7f9]"
+                      className="h-9 rounded-lg border border-[#d0d5dd] bg-white px-3 font-semibold text-[#344054] transition hover:border-[#98a2b3] hover:bg-[#f8f9fb]"
                     >
                       View
                     </button>
                     <button
                       type="button"
                       onClick={() => onDelete(document.id)}
-                      className="h-9 rounded-md border border-[#e1b8b8] px-3 font-semibold text-[#8a2d2d] transition hover:border-[#ba7474] hover:bg-[#fff5f5]"
+                      className="h-9 rounded-lg border border-[#f0c5c1] bg-white px-3 font-semibold text-[#b42318] transition hover:border-[#d57b73] hover:bg-[#fff6f5]"
                     >
                       Remove from inbox
                     </button>

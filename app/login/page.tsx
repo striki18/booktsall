@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabaseBrowser } from '@/lib/supabase-browser';
+import { ZevidtLogo } from '@/app/quickbooks/icons';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -65,9 +66,9 @@ export default function LoginPage() {
 
   return (
     <main className="grid min-h-screen bg-[#f4f4f2] text-[#171717] lg:grid-cols-[minmax(0,1.08fr)_minmax(440px,.92fr)]">
-      <section className="relative hidden overflow-hidden bg-[#171717] p-12 text-white lg:flex lg:flex-col lg:justify-between xl:p-16">
+      <section className="relative hidden overflow-hidden bg-[#111827] p-12 text-white lg:flex lg:flex-col lg:justify-between xl:p-16">
         <Link href="/quickbooks" className="workspaceBrand w-fit !text-white">
-          <span className="workspaceBrandMark !border-white !text-white" aria-hidden="true">Z</span><span className="workspaceBrandWord">ZEVIDT</span>
+          <ZevidtLogo inverse />
         </Link>
         <div className="relative z-10 max-w-2xl">
           <p className="mb-6 text-xs font-semibold uppercase tracking-[.2em] text-white/45">Evidence, under control</p>
@@ -75,12 +76,12 @@ export default function LoginPage() {
           <p className="mt-8 max-w-lg text-lg leading-8 text-white/55">Collect documents, resolve uncertainty, and build a verifiable record without the usual chase.</p>
         </div>
         <p className="relative z-10 text-xs text-white/35">QuickBooks connected · Human verified · Audit ready</p>
-        <div className="pointer-events-none absolute -right-48 top-1/4 size-[42rem] rounded-full border border-white/10 shadow-[inset_0_0_100px_rgba(255,255,255,.03)]" />
+        <div className="pointer-events-none absolute -right-48 top-1/4 size-[42rem] rounded-full bg-[#3e6ae1]/20 blur-3xl" />
       </section>
       <section className="flex min-h-screen items-center justify-center px-6 py-12 sm:px-12">
         <div className="w-full max-w-md">
         <Link href="/quickbooks" className="workspaceBrand mb-14 w-fit lg:hidden">
-          <span className="workspaceBrandMark" aria-hidden="true">Z</span><span className="workspaceBrandWord">ZEVIDT</span>
+          <ZevidtLogo />
         </Link>
         <p className="text-xs font-semibold uppercase tracking-[.18em] text-[#858580]">Secure workspace</p>
         <h1 className="mt-4 text-4xl font-medium leading-tight tracking-[-.06em]">{mode === 'request' ? 'Reset your password' : mode === 'update' ? 'Choose a new password' : 'Welcome back.'}</h1>

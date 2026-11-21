@@ -131,22 +131,22 @@ export default function DocumentsPage() {
     <div className="workspacePage">
       <WorkspaceHeader />
       <main className="workspaceContent">
-      <section className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-        <header className="flex flex-col justify-between gap-5 border-b border-[#d9dde5] pb-6 sm:flex-row sm:items-end">
+      <section className="mx-auto flex w-full max-w-6xl flex-col gap-5">
+        <header className="flex flex-col justify-between gap-6 border-b border-[#e4e7ec] pb-7 sm:flex-row sm:items-end">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#55706d]">Zevidt inbox</p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-normal text-[#172033] sm:text-4xl">{financeMode ? "Documents" : "Bring everything together."}</h1>
-            <p className="mt-3 max-w-2xl text-base leading-7 text-[#5d6675]">{financeMode ? "Collect and manage the receipts and supporting evidence for your transactions." : "Drop in documents from email, messages, or folders. We’ll organize them for review."}</p>
+            <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[#3159c9]">Unified inbox</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-normal text-[#101828] sm:text-4xl">{financeMode ? "Documents" : "Bring everything together."}</h1>
+            <p className="mt-3 max-w-2xl text-base leading-7 text-[#667085]">{financeMode ? "Collect and manage the receipts and supporting evidence for your transactions." : "Drop in documents from email, messages, or folders. We’ll organize them for review."}</p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
-            <button type="button" onClick={browseFiles} disabled={isUploading} className="h-11 rounded-lg bg-[#3e6ae1] px-5 text-sm font-semibold text-white shadow-[0_4px_12px_rgba(62,106,225,0.22)] transition hover:bg-[#3159c9] disabled:opacity-60">{isUploading ? "Uploading…" : "Upload documents"}</button>
+            <button type="button" onClick={browseFiles} disabled={isUploading} className="h-11 rounded-[9px] bg-[#3e6ae1] px-5 text-sm font-semibold text-white shadow-[0_4px_12px_rgba(62,106,225,0.18)] transition hover:-translate-y-px hover:bg-[#2f56c7] disabled:opacity-60">{isUploading ? "Uploading…" : "Upload documents"}</button>
           </div>
         </header>
 
         <UploadDropzone inputRef={inputRef} isDragging={isDragging} onBrowse={browseFiles} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} onFileChange={handleFileChange} />
-        {message ? <div role="status" className="rounded-md border border-[#d7e2df] bg-[#eef4f2] px-4 py-3 text-sm font-medium text-[#345d57]">{message}</div> : null}
+        {message ? <div role="status" className="rounded-xl border border-[#c8e8dc] bg-[#f0fbf6] px-4 py-3 text-sm font-medium text-[#087a55]">{message}</div> : null}
         <DocumentToolbar search={search} filter={filter} totalCount={documents.length} visibleCount={visibleDocuments.length} onSearchChange={setSearch} onFilterChange={setFilter} />
-        {isLoading ? <p className="rounded-md border border-[#d9dde5] bg-white p-6 text-sm text-[#5d6675]">Loading documents…</p> : visibleDocuments.length > 0 ? <DocumentTable documents={visibleDocuments} onView={viewDocument} onDelete={(id) => { void deleteDocument(id); }} /> : <EmptyDocuments hasDocuments={documents.length > 0} onUpload={browseFiles} />}
+        {isLoading ? <p className="rounded-2xl border border-[#e4e7ec] bg-white p-6 text-sm text-[#667085] shadow-[0_1px_3px_rgba(16,24,40,.04)]">Loading documents…</p> : visibleDocuments.length > 0 ? <DocumentTable documents={visibleDocuments} onView={viewDocument} onDelete={(id) => { void deleteDocument(id); }} /> : <EmptyDocuments hasDocuments={documents.length > 0} onUpload={browseFiles} />}
       </section>
       </main>
     </div>

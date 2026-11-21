@@ -16,14 +16,12 @@ export async function GET(request: Request) {
   try {
     const { realmId: authenticatedRealmId } = await requireAuth();
     const { searchParams } = new URL(request.url);
-    const realmId = searchParams.get('realmId');
+    const requestedRealmId = searchParams.get('realmId');
+    const realmId = requestedRealmId || authenticatedRealmId;
     const collectionRequestId = searchParams.get('collectionRequestId') || undefined;
     const startDate = searchParams.get('startDate') || undefined;
     const endDate = searchParams.get('endDate') || undefined;
 
-    if (!realmId) {
-      return NextResponse.json({ error: 'realmId is required' }, { status: 400 });
-    }
     if (realmId !== authenticatedRealmId) {
       return NextResponse.json({ error: 'realmId is not authorized for this account' }, { status: 403 });
     }

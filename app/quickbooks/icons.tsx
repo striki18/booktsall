@@ -12,6 +12,19 @@ type WorkspacePanel = 'work' | 'packages' | 'profile' | null;
 type QboConnectionState = 'checking' | 'connected' | 'needs_connection' | 'signed_out' | 'unavailable';
 export type WordingMode = 'general' | 'finance';
 
+export function ZevidtLogo({ inverse = false, compact = false }: { inverse?: boolean; compact?: boolean }) {
+  return (
+    <span className={`zevidtLogo${inverse ? ' zevidtLogoInverse' : ''}${compact ? ' zevidtLogoCompact' : ''}`}>
+      <svg className="zevidtLogoMark" viewBox="0 0 36 36" aria-hidden="true">
+        <rect x="1" y="1" width="34" height="34" rx="10" />
+        <path d="M10 11.5h16L11 24.5h15" />
+        <path d="m21.5 20.5 3 3 5.5-6" />
+      </svg>
+      {!compact ? <span className="zevidtLogoWord">ZEVIDT</span> : null}
+    </span>
+  );
+}
+
 export function useWordingMode() {
   const [wording, setWording] = useState<WordingMode>('general');
 
@@ -127,8 +140,7 @@ export function WorkspaceHeader({
     <>
       <header className="workspaceTopbar">
         <Link href="/quickbooks" className="workspaceBrand" aria-label="Zevidt home">
-          <span className="workspaceBrandMark" aria-hidden="true">Z</span>
-          <span className="workspaceBrandWord">ZEVIDT</span>
+          <ZevidtLogo />
         </Link>
 
         <nav className="workspacePrimaryNav" aria-label="Primary navigation">
@@ -188,22 +200,22 @@ export function WorkspaceHeader({
               <div className="workspacePanelLinks">
                 {workspaceSections.map((section) => (
                   <button key={section.id} type="button" className={activeSection === section.id ? 'isCurrent' : ''} onClick={() => openSection(section.id)}>
-                    <span>{financeMode ? section.finance : section.general}</span><span aria-hidden="true">→</span>
+                    <span>{financeMode ? section.finance : section.general}</span>
                   </button>
                 ))}
-                <Link href="/firm/inbox" onClick={() => setPanel(null)}>{financeMode ? 'Collection requests' : 'Client requests'}<span aria-hidden="true">→</span></Link>
+                <Link href="/firm/inbox" onClick={() => setPanel(null)}>{financeMode ? 'Collection requests' : 'Client requests'}</Link>
               </div>
             ) : panel === 'packages' ? (
               <div className="workspacePanelLinks">
-                <button type="button" onClick={() => openSection('generate')}>Create package<span aria-hidden="true">→</span></button>
-                <Link href="/packages" onClick={() => setPanel(null)}>Package history<span aria-hidden="true">→</span></Link>
-                <Link href="/audit-packages" onClick={() => setPanel(null)}>Audit packages<span aria-hidden="true">→</span></Link>
-                <button type="button" onClick={() => openSection('attachments')}>QuickBooks files<span aria-hidden="true">→</span></button>
+                <button type="button" onClick={() => openSection('generate')}>Create package</button>
+                <Link href="/packages" onClick={() => setPanel(null)}>Package history</Link>
+                <Link href="/audit-packages" onClick={() => setPanel(null)}>Audit packages</Link>
+                <button type="button" onClick={() => openSection('attachments')}>QuickBooks files</button>
               </div>
             ) : (
               <div className="workspacePanelLinks">
-                <button type="button" onClick={() => { setPanel(null); window.location.assign('/quickbooks?settings=integrations'); }}>Settings & integrations<span aria-hidden="true">→</span></button>
-                <button type="button" className="workspaceSignOut" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}<span aria-hidden="true">→</span></button>
+                <button type="button" onClick={() => { setPanel(null); window.location.assign('/quickbooks?settings=integrations'); }}>Settings & integrations</button>
+                <button type="button" className="workspaceSignOut" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button>
               </div>
             )}
           </aside>

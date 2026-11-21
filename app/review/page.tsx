@@ -92,26 +92,43 @@ export default function EvidenceReviewPage() {
   }, [evidenceItems, selectedReviewItemId]);
 
   const loadRegister = useCallback(async () => {
-    setLoading(true);
+    const cacheKey = `zevidt:review:${startDate}:${endDate}`;
+    let restored = false;
+    try {
+      const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || 'null') as { savedAt?: number; entries?: RegisterEntry[]; items?: EvidenceItem[]; managedDocumentIds?: string[] } | null;
+      if (cached?.savedAt && Date.now() - cached.savedAt < 60_000 && Array.isArray(cached.entries) && Array.isArray(cached.items) && Array.isArray(cached.managedDocumentIds)) {
+        setEntries(cached.entries);
+        setEvidenceItems(cached.items);
+        setManagedDocumentIds(cached.managedDocumentIds);
+        restored = true;
+      }
+    } catch {
+      window.sessionStorage.removeItem(cacheKey);
+    }
+    setLoading(!restored);
     setError(null);
     setNotice(null);
     try {
-      const response = await fetch(`/api/evidence/register?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
-      const body = await response.json();
+      const registerParams = new URLSearchParams({ startDate, endDate });
+      const [response, itemResponse, managedResponse] = await Promise.all([
+        fetch(`/api/evidence/qbo-register?${registerParams.toString()}`, { cache: 'no-store' }),
+        fetch('/api/evidence/items', { cache: 'no-store' }),
+        fetch('/api/evidence/items?managedDocuments=true', { cache: 'no-store' }),
+      ]);
+      const [body, itemBody, managedBody] = await Promise.all([response.json(), itemResponse.json(), managedResponse.json()]);
       if (!response.ok) throw new Error(body.error || 'Unable to load evidence register');
       if (!Array.isArray(body)) throw new Error('Evidence register response was invalid');
       setEntries(body);
       try {
-        const [itemResponse, managedResponse] = await Promise.all([
-          fetch('/api/evidence/items'), fetch('/api/evidence/items?managedDocuments=true'),
-        ]);
-        const [itemBody, managedBody] = await Promise.all([itemResponse.json(), managedResponse.json()]);
         if (!itemResponse.ok) throw new Error(itemBody.error || 'Unable to load evidence items');
         if (!Array.isArray(itemBody)) throw new Error('Evidence item response was invalid');
         if (!managedResponse.ok || !Array.isArray(managedBody.documentIds) || managedBody.documentIds.some((id: unknown) => typeof id !== 'string')) throw new Error('Unable to verify document review ownership');
         setEvidenceItems(itemBody);
         setManagedDocumentIds(managedBody.documentIds);
         setEvidenceItemError(null);
+        window.sessionStorage.setItem(cacheKey, JSON.stringify({
+          savedAt: Date.now(), entries: body, items: itemBody, managedDocumentIds: managedBody.documentIds,
+        }));
       } catch (itemCause) {
         setManagedDocumentIds(null);
         setEvidenceItems([]);
@@ -163,19 +180,21 @@ export default function EvidenceReviewPage() {
       });
       const body = await response.json();
       if (!response.ok) {
-        if (body.decisionRecorded) await loadRegister();
+        if (body.decisionRecorded) void loadRegister();
         throw new Error(body.error || 'The review decision could not be completed');
       }
       if (action.startsWith('discard')) {
+        setEvidenceItems((current) => current.filter((candidate) => candidate.id !== item.id));
         setNotice('Discarded from the active queue. The document and audit history remain stored in Zevidt.');
       } else if (body.requiresAdditionalApproval) {
+        setEvidenceItems((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, ...body.item } : candidate));
         setNotice('Match confirmed. This transaction already has evidence, so the document remains in review and was not attached to QuickBooks.');
       } else if (body.attachment?.status === 'verified') {
+        setEvidenceItems((current) => current.filter((candidate) => candidate.id !== item.id));
         setNotice('Decision recorded. QuickBooks attachment was read back and verified.');
       } else {
         throw new Error(body.error || 'Decision was recorded, but the QuickBooks attachment is not verified.');
       }
-      await loadRegister();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to save the evidence decision');
     } finally {
@@ -238,8 +257,29 @@ export default function EvidenceReviewPage() {
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Unable to save review decision');
+      const decision = body.decision as ReviewDecision;
+      setEntries((current) => current.map((candidate) => {
+        if (candidate.id !== entry.id) return candidate;
+        if (decision.action === 'confirm_match' || decision.action === 'assign_transaction') {
+          return {
+            ...candidate,
+            qboTxnId: decision.selected_qbo_txn_id ?? candidate.qboTxnId,
+            registerState: 'MATCHED',
+            reviewCandidateTxnIds: [],
+            humanApproved: true,
+            reviewDecision: decision,
+            reviewHistory: [...(candidate.reviewHistory ?? []), decision],
+          };
+        }
+        return {
+          ...candidate,
+          registerState: decision.action === 'mark_wrong_match' ? 'WRONG_MATCHED' : 'REVIEW_REQUIRED',
+          humanApproved: false,
+          reviewDecision: decision,
+          reviewHistory: [...(candidate.reviewHistory ?? []), decision],
+        };
+      }));
       setNotice('Decision recorded. The register and package output now reflect this review.');
-      await loadRegister();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to save review decision');
     } finally {
@@ -252,17 +292,18 @@ export default function EvidenceReviewPage() {
       <WorkspaceHeader />
       <main className="workspaceContent">
       <section className="mx-auto max-w-6xl">
-        <header className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-[#d9dde5] pb-6">
+        <header className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-[#e4e7ec] pb-7">
           <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[#3159c9]">Decision workspace</p>
             <h1 className="mt-3 text-3xl font-semibold">{financeMode ? 'Evidence review' : 'Items that need a look'}</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-[#5d6675]">{financeMode ? 'Review uncertain evidence matches, possible duplicates, and secondary documents. Every decision is recorded.' : 'Check possible mix-ups, duplicates, and documents that need your decision. We’ll keep a record of what you choose.'}</p>
+            <p className="mt-3 max-w-2xl text-base leading-7 text-[#667085]">{financeMode ? 'Review uncertain evidence matches, possible duplicates, and secondary documents. Every decision is recorded.' : 'Check possible mix-ups, duplicates, and documents that need your decision. We’ll keep a record of what you choose.'}</p>
           </div>
         </header>
 
-        <form onSubmit={event => { event.preventDefault(); void loadRegister(); }} className="mb-6 flex flex-wrap items-end gap-3 rounded-lg border border-[#d9dde5] bg-white p-4">
+        <form onSubmit={event => { event.preventDefault(); void loadRegister(); }} className="mb-7 flex flex-wrap items-end gap-3 rounded-2xl border border-[#e4e7ec] bg-white p-4 shadow-[0_1px_3px_rgba(16,24,40,.04)]">
           <label className="grid gap-1 text-sm font-medium">Start date<input type="date" value={startDate} onChange={event => setStartDate(event.target.value)} className="h-10 rounded border border-[#c8ced8] px-3" required /></label>
           <label className="grid gap-1 text-sm font-medium">End date<input type="date" value={endDate} onChange={event => setEndDate(event.target.value)} className="h-10 rounded border border-[#c8ced8] px-3" required /></label>
-          <button disabled={loading} className="h-11 rounded-lg bg-[#3e6ae1] px-4 font-semibold text-white shadow-sm hover:bg-[#3159c9] disabled:opacity-60">{loading ? 'Loading…' : 'Refresh register'}</button>
+          <button disabled={loading} className="h-11 rounded-[9px] bg-[#3e6ae1] px-4 font-semibold text-white shadow-[0_4px_12px_rgba(62,106,225,.18)] hover:bg-[#2f56c7] disabled:opacity-60">{loading ? 'Loading…' : 'Refresh register'}</button>
           <span className="ml-auto text-sm text-[#5d6675]">{reviewEntries.length + evidenceItems.length} item{reviewEntries.length + evidenceItems.length === 1 ? '' : 's'} to review</span>
         </form>
 
@@ -278,7 +319,7 @@ export default function EvidenceReviewPage() {
             <span className="text-sm text-[#5d6675]">{evidenceItems.length} item{evidenceItems.length === 1 ? '' : 's'}</span>
           </div>
           {evidenceItemError ? <p role="alert" className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{evidenceItemError}</p> : null}
-          {!evidenceItemError && evidenceItems.length === 0 ? <p className="rounded-lg border border-[#d9dde5] bg-white p-5 text-sm text-[#5d6675]">No document-level decisions are waiting.</p> : null}
+          {!evidenceItemError && evidenceItems.length === 0 ? <p className="rounded-2xl border border-[#e4e7ec] bg-white p-6 text-sm text-[#667085] shadow-[0_1px_3px_rgba(16,24,40,.04)]">No document-level decisions are waiting.</p> : null}
           <div className="reviewWorkbench">
             <aside className="reviewQueue" aria-label="Review queue">
               {evidenceItems.map(item => {
@@ -317,7 +358,7 @@ export default function EvidenceReviewPage() {
                   amount: entry.qboTxnAmount, docNumber: entry.qboTxnDocNumber,
                 })), searchText);
               return (
-                <article key={item.id} className="reviewDecisionCard rounded-lg border border-[#d9dde5] bg-white p-5 shadow-sm">
+                <article key={item.id} className="reviewDecisionCard rounded-2xl border border-[#e4e7ec] bg-white p-6 shadow-[0_1px_3px_rgba(16,24,40,.04)]">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-wide text-[#65758b]">{isDuplicate ? 'Duplicate found' : isPotential ? 'Potential match' : 'Additional evidence'} · review required</p>

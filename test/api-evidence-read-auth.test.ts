@@ -123,6 +123,17 @@ describe('evidence API company scope', () => {
     expect(mocks.applyStoredEvidenceReviewDecisions).toHaveBeenCalledWith([row], 'realm-owned', [row]);
   });
 
+  it('uses the authenticated company when the persisted register request omits realmId', async () => {
+    mocks.requireAuth.mockResolvedValue({ realmId: 'realm-owned' });
+    mocks.getRegisterEntries.mockResolvedValue([]);
+    mocks.applyStoredEvidenceReviewDecisions.mockResolvedValue([]);
+
+    const response = await qboRegisterGet(new Request('http://localhost/api/evidence/qbo-register?startDate=2025-01-01&endDate=2025-01-31'));
+
+    expect(response.status).toBe(200);
+    expect(mocks.getRegisterEntries).toHaveBeenCalledWith('realm-owned', undefined, '2025-01-01', '2025-01-31');
+  });
+
   it('rejects a different realm before reading or persisting QBO register data', async () => {
     mocks.requireAuth.mockResolvedValue({ realmId: 'realm-owned' });
     const getResponse = await qboRegisterGet(new Request('http://localhost/api/evidence/qbo-register?realmId=other-realm'));
