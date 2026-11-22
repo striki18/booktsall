@@ -736,10 +736,27 @@ export async function matchDocumentToTransactions(
   const bestMatch = results[0];
 
   // Check for multiple high-confidence candidates
-  // Auto-match requires confidence >= 90 with exactly one candidate at that level.
+  // Auto-match requires confidence >= 90 with exactly one candidate at that level,
+  // or one uniquely identified transaction whose vendor, date and document number
+  // all agree. In the latter case an amount difference remains visible as a warning,
+  // but does not create review work when no other transaction is a better candidate.
   // Ambiguous requires top candidate >= 60 (but not qualifying as auto-match).
   // No-match is below 60.
   const highConfidenceCount = results.filter(r => r.confidence >= 90).length;
+  const uniqueIdentityCandidates = results.filter(r =>
+    r.signals.vendorMatch && r.signals.dateMatch && r.signals.documentNumberMatch
+  );
+  const amountSignConflict =
+    docFields.totalAmount !== null &&
+    bestMatch.transaction.amount !== null &&
+    docFields.totalAmount !== 0 &&
+    bestMatch.transaction.amount !== 0 &&
+    Math.sign(docFields.totalAmount) !== Math.sign(bestMatch.transaction.amount) &&
+    !bestMatch.signals.amountMatch;
+  const uniqueIdentityMatch =
+    uniqueIdentityCandidates.length === 1 &&
+    uniqueIdentityCandidates[0].transaction.txnId === bestMatch.transaction.txnId &&
+    !amountSignConflict;
 
   // Build candidate details with field-level comparisons
   const plausibleResults = results
@@ -752,7 +769,10 @@ export async function matchDocumentToTransactions(
     signals: r.signals,
   }));
 
-  if (bestMatch.confidence >= 90 && highConfidenceCount === 1 && (allowClaimedTransactionMatch || !claimedTransactionIds.has(bestMatch.transaction.txnId))) {
+  if (
+    ((bestMatch.confidence >= 90 && highConfidenceCount === 1) || uniqueIdentityMatch) &&
+    (allowClaimedTransactionMatch || !claimedTransactionIds.has(bestMatch.transaction.txnId))
+  ) {
     return {
       documentId,
       transactionId: bestMatch.transaction.txnId,

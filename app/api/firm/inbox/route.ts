@@ -98,12 +98,70 @@ export async function GET() {
       filter: { realm_id }, order: { column: 'uploaded_at', ascending: false },
       isNull: ['archived_at'],
     });
+    const { data: evidenceItems } = await supabaseQuery('qbo_evidence_items', {
+      filter: { realm_id },
+      select: 'inbox_document_id,register_entry_id,proposed_register_entry_id,candidate_qbo_txn_ids,match_status,review_status,evidence_role,match_confidence,match_evidence',
+    });
+    const { data: registerEntries } = await supabaseQuery('qbo_evidence_register', {
+      filter: { realm_id },
+      select: 'id,qbo_txn_id,qbo_txn_type,qbo_txn_date,qbo_txn_vendor,qbo_txn_amount,qbo_txn_doc_number',
+    });
+    type RegisterEntry = {
+      id: string; qbo_txn_id: string | null; qbo_txn_type: string | null; qbo_txn_date: string | null;
+      qbo_txn_vendor: string | null; qbo_txn_amount: number | null; qbo_txn_doc_number: string | null;
+    };
+    const registerById = new Map(((registerEntries || []) as RegisterEntry[]).map((entry) => [entry.id, entry]));
+    const registerByQboTxnId = new Map(((registerEntries || []) as RegisterEntry[]).filter((entry) => entry.qbo_txn_id).map((entry) => [entry.qbo_txn_id!, entry]));
+    const presentRegisterEntry = (entry: RegisterEntry | undefined) => entry ? {
+      id: entry.id,
+      qboTxnId: entry.qbo_txn_id,
+      type: entry.qbo_txn_type,
+      date: entry.qbo_txn_date,
+      name: entry.qbo_txn_vendor,
+      amount: entry.qbo_txn_amount,
+      documentNumber: entry.qbo_txn_doc_number,
+    } : null;
+    const presentTransaction = (entryId: string | null) => {
+      if (!entryId) return null;
+      return presentRegisterEntry(registerById.get(entryId));
+    };
+    const presentTransactionByQboId = (qboTxnId: string | null) => qboTxnId ? presentRegisterEntry(registerByQboTxnId.get(qboTxnId)) : null;
+    const evidenceByDocument = new Map(
+      ((evidenceItems || []) as Array<{
+        inbox_document_id: string | null;
+        register_entry_id: string | null;
+        proposed_register_entry_id: string | null;
+        candidate_qbo_txn_ids: string[] | null;
+        match_status: string;
+        review_status: string;
+        evidence_role: string;
+        match_confidence: number | null;
+        match_evidence: Record<string, unknown> | null;
+      }>)
+        .filter((item) => item.inbox_document_id)
+        .map((item) => [item.inbox_document_id, item]),
+    );
+    const documentsWithEvidenceState = ((documents || []) as Array<Record<string, unknown>>).map((document) => {
+      const evidence = evidenceByDocument.get(String(document.id));
+      return {
+        ...document,
+        evidence_match_status: evidence?.match_status ?? null,
+        evidence_review_status: evidence?.review_status ?? null,
+        evidence_role: evidence?.evidence_role ?? null,
+        evidence_match_confidence: evidence?.match_confidence ?? null,
+        evidence_match_evidence: evidence?.match_evidence ?? null,
+        candidate_qbo_txn_ids: evidence?.candidate_qbo_txn_ids ?? [],
+        linked_transaction: presentTransaction(evidence?.register_entry_id ?? null),
+        proposed_transaction: presentTransaction(evidence?.proposed_register_entry_id ?? null)
+          ?? presentTransactionByQboId(evidence?.candidate_qbo_txn_ids?.[0] ?? null),
+      };
+    });
     const inboxLink = inbox
       ? `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/inbox/${inbox.token}`
       : null;
     return NextResponse.json({
       inbox: inbox ? { id: inbox.id, realm_id: inbox.realm_id, token: inbox.token, link: inboxLink, created_at: inbox.created_at } : null,
-      requests: requests || [], documents: documents || [],
+      requests: requests || [], documents: documentsWithEvidenceState,
     });
   } catch (error) {
     const response = authFailure(error);

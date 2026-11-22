@@ -25,6 +25,8 @@ export default function PackageHistoryPage() {
   const [loading, setLoading] = useState(true);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDownloading, setBulkDownloading] = useState(false);
 
   const loadHistory = useCallback(async () => {
     setLoading(true);
@@ -80,6 +82,28 @@ export default function PackageHistoryPage() {
       : (item.status === 'complete' || item.status === 'partial') && Boolean(item.zip_path);
   }
 
+  function exportSelectedPackages() {
+    const selected = packages.filter((item) => selectedIds.has(item.id));
+    if (!selected.length) return;
+    const escape = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+    const rows = [
+      ['Filename', 'Status', 'Source', 'Created at', 'Start date', 'End date', 'Version'],
+      ...selected.map((item) => [item.filename, item.status, item.source_type, item.created_at, item.start_date, item.end_date, item.package_version]),
+    ];
+    const url = window.URL.createObjectURL(new Blob([rows.map((row) => row.map(escape).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = `Zevidt-package-history-${new Date().toISOString().slice(0, 10)}.csv`; anchor.click(); window.URL.revokeObjectURL(url);
+  }
+
+  async function downloadSelectedPackages() {
+    const selected = packages.filter((item) => selectedIds.has(item.id) && canDownload(item));
+    setBulkDownloading(true);
+    try {
+      for (const item of selected) await downloadPackage(item);
+    } finally {
+      setBulkDownloading(false);
+    }
+  }
+
   return (
     <div className="workspacePage">
       <WorkspaceHeader />
@@ -98,9 +122,12 @@ export default function PackageHistoryPage() {
         {loading && packages.length === 0 ? <p className="rounded-2xl border border-[#e4e7ec] bg-white p-6 text-sm shadow-[0_1px_3px_rgba(16,24,40,.04)]">Loading package history…</p> : null}
         {!loading && packages.length === 0 ? <p className="rounded-2xl border border-[#e4e7ec] bg-white p-8 text-sm text-[#667085] shadow-[0_1px_3px_rgba(16,24,40,.04)]">No package runs are available for this company.</p> : null}
 
+        {packages.length > 0 ? <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#e4e7ec] bg-white px-4 py-3 shadow-[0_1px_3px_rgba(16,24,40,.04)]"><label className="flex items-center gap-3 text-sm font-semibold text-[#344054]"><input type="checkbox" checked={packages.every((item) => selectedIds.has(item.id))} onChange={() => setSelectedIds((current) => packages.every((item) => current.has(item.id)) ? new Set() : new Set(packages.map((item) => item.id)))} className="h-4 w-4 accent-[#3e6ae1]" />Select all packages</label>{selectedIds.size > 0 ? <div className="flex flex-wrap items-center gap-2"><strong className="text-sm text-[#3159c9]">{selectedIds.size} selected</strong><button type="button" onClick={exportSelectedPackages} className="h-10 rounded-[9px] border border-[#b8c6ea] px-4 text-sm font-semibold text-[#3159c9]">Export CSV</button><button type="button" disabled={bulkDownloading} onClick={() => void downloadSelectedPackages()} className="h-10 rounded-[9px] bg-[#3e6ae1] px-4 text-sm font-semibold text-white disabled:opacity-60">{bulkDownloading ? 'Preparing…' : 'Download selected'}</button><button type="button" onClick={() => setSelectedIds(new Set())} className="h-10 px-3 text-sm font-semibold text-[#667085]">Clear</button></div> : null}</div> : null}
+
         <div className="grid gap-3">
           {packages.map(item => (
             <article key={item.id} className="flex flex-wrap items-center justify-between gap-5 rounded-2xl border border-[#e4e7ec] bg-white p-6 shadow-[0_1px_3px_rgba(16,24,40,.04)] transition hover:border-[#cbd5ed] hover:shadow-[0_12px_28px_rgba(16,24,40,.07)]">
+              <input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => setSelectedIds((current) => { const next = new Set(current); next.has(item.id) ? next.delete(item.id) : next.add(item.id); return next; })} aria-label={`Select ${item.filename || 'evidence package'}`} className="h-4 w-4 accent-[#3e6ae1]" />
               <div className="min-w-64 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="font-semibold">{item.filename || (item.engagement_id ? `Engagement package ${item.engagement_id}` : 'Evidence package')}</h2>

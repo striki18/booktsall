@@ -123,6 +123,42 @@ describe('claimed transaction matching', () => {
     expect(result.confidence).toBe(100);
     expect(result.matchSignals.vendorMatch).toBe(true);
   });
+
+  it('matches a unique vendor, date and document number even when the amount differs', async () => {
+    const result = await matchDocumentToTransactions('amount-warning', {
+      ...fields, vendorName: "Amy's Bird Sanctuary", documentDate: '2026-10-16', documentNumber: '1001', totalAmount: 125.23,
+    }, undefined, [{
+      txnId: '9', txnType: 'Invoice', vendor: "Amy's Bird Sanctuary", date: '2026-10-16', docNumber: '1001', amount: 108,
+    }], 'realm-1');
+
+    expect(result.status).toBe('matched');
+    expect(result.transactionId).toBe('9');
+    expect(result.confidence).toBe(70);
+    expect(result.matchSignals).toMatchObject({ vendorMatch: true, dateMatch: true, documentNumberMatch: true, amountMatch: false });
+  });
+
+  it('requires review when another transaction is a better candidate for an amount-mismatched document', async () => {
+    const document = { ...fields, vendorName: "Amy's Bird Sanctuary", documentDate: '2026-10-16', documentNumber: '1001', totalAmount: 125.23 };
+    const result = await matchDocumentToTransactions('amount-ambiguous', document, undefined, [
+      { txnId: '9', txnType: 'Invoice', vendor: "Amy's Bird Sanctuary", date: '2026-10-16', docNumber: '1001', amount: 108 },
+      { txnId: '10', txnType: 'Invoice', vendor: "Amy's Bird Sanctuary", date: '2026-10-16', docNumber: '1002', amount: 125.23 },
+    ], 'realm-1');
+
+    expect(result.status).toBe('multiple_candidates');
+    expect(result.transactionId).toBeNull();
+    expect(result.allCandidates?.map(candidate => candidate.txnId)).toEqual(expect.arrayContaining(['9', '10']));
+  });
+
+  it('requires review when more than one transaction shares the same identity fields', async () => {
+    const document = { ...fields, vendorName: 'Acme Supplies', documentDate: '2026-10-01', documentNumber: 'INV-123', totalAmount: 150 };
+    const result = await matchDocumentToTransactions('duplicate-identity', document, undefined, [
+      { ...transaction, txnId: 'txn-1', amount: 125.5 },
+      { ...transaction, txnId: 'txn-2', amount: 175 },
+    ], 'realm-1');
+
+    expect(result.status).toBe('multiple_candidates');
+    expect(result.transactionId).toBeNull();
+  });
 });
 
 describe('document reference extraction', () => {

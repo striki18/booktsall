@@ -125,6 +125,21 @@ interface RequirementEvaluation {
   checks: Array<{ ruleId: string; ruleName: string; documentType: string; status: string; evidenceCount: number }>;
 }
 
+function downloadCsvFile(filename: string, headers: string[], rows: unknown[][]) {
+  const escape = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+  const content = [headers, ...rows].map((row) => row.map(escape).join(',')).join('\r\n');
+  const url = window.URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.URL.revokeObjectURL(url);
+}
+
+function evidenceSelectionKey(row: EvidenceRegisterViewRow, index: number) {
+  return String(row.id ?? `${row.qboTxnId ?? 'unlinked'}-${row.matchedDocumentId ?? index}`);
+}
+
 function localDateValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -331,6 +346,7 @@ export default function QuickbooksPage() {
   const [activityMaxAmount, setActivityMaxAmount] = useState('');
   const [activitySort, setActivitySort] = useState<'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc' | 'name_asc'>('date_desc');
   const [activityFiltersOpen, setActivityFiltersOpen] = useState(false);
+  const [selectedActivityTxnIds, setSelectedActivityTxnIds] = useState<Set<string>>(new Set());
 
   // Generation state
   const [generating, setGenerating] = useState(false);
@@ -359,6 +375,7 @@ export default function QuickbooksPage() {
   const [evidenceStateFilter, setEvidenceStateFilter] = useState<EvidenceRegisterState | 'ALL'>('ALL');
   const [evidenceSort, setEvidenceSort] = useState<EvidenceRegisterSort>('date_desc');
   const [selectedEvidenceRow, setSelectedEvidenceRow] = useState<EvidenceRegisterViewRow | null>(null);
+  const [selectedEvidenceRowIds, setSelectedEvidenceRowIds] = useState<Set<string>>(new Set());
   const [requirementRules, setRequirementRules] = useState<EvidenceRequirementRule[]>([]);
   const [requirementRows, setRequirementRows] = useState<RequirementEvaluation[]>([]);
   const [requirementsLoading, setRequirementsLoading] = useState(false);
@@ -1073,10 +1090,16 @@ export default function QuickbooksPage() {
               {transactions.length} of {allTransactions.length} transactions
               {!workspaceAttachableError ? ` · ${linkedFiles.length} transaction-linked file records · ${orphanedFiles.length} unattached file records` : ''}
             </p>
+            {selectedActivityTxnIds.size > 0 ? <div className={styles.cardActions}>
+              <strong>{selectedActivityTxnIds.size} selected</strong>
+              <button type="button" className={styles.btn + ' ' + styles.btnPrimary} onClick={() => downloadCsvFile(`Zevidt-transactions-${new Date().toISOString().slice(0, 10)}.csv`, ['Date', 'Type', 'Number', 'Name', 'Amount', 'QBO ID', 'QuickBooks files'], transactions.filter((transaction) => transaction.txnId && selectedActivityTxnIds.has(transaction.txnId)).map((transaction) => [transaction.date, transaction.txnType, transaction.docNumber, transaction.vendor, transaction.amount, transaction.txnId, workspaceAttachables.filter((file) => !file.orphaned && file.entityId === transaction.txnId).length]))}>Export selected CSV</button>
+              <button type="button" className={styles.btn + ' ' + styles.btnLink} onClick={() => setSelectedActivityTxnIds(new Set())}>Clear</button>
+            </div> : null}
             <div className={styles.activityTableWrap}>
               <table className={styles.activityTable}>
                 <thead>
                   <tr>
+                    <th scope="col"><input type="checkbox" aria-label="Select all visible transactions" checked={transactions.length > 0 && transactions.every((transaction) => transaction.txnId && selectedActivityTxnIds.has(transaction.txnId))} onChange={() => setSelectedActivityTxnIds((current) => { const next = new Set(current); const allSelected = transactions.every((transaction) => transaction.txnId && next.has(transaction.txnId)); transactions.forEach((transaction) => { if (transaction.txnId) allSelected ? next.delete(transaction.txnId) : next.add(transaction.txnId); }); return next; })} /></th>
                     <th scope="col">Date</th>
                     <th scope="col">Type</th>
                     <th scope="col">Number</th>
@@ -1096,6 +1119,7 @@ export default function QuickbooksPage() {
                     ).values()];
                     return (
                       <tr key={transaction.txnId}>
+                        <td><input type="checkbox" aria-label={`Select transaction ${transaction.docNumber || transaction.txnId}`} checked={Boolean(transaction.txnId && selectedActivityTxnIds.has(transaction.txnId))} onChange={() => transaction.txnId && setSelectedActivityTxnIds((current) => { const next = new Set(current); next.has(transaction.txnId!) ? next.delete(transaction.txnId!) : next.add(transaction.txnId!); return next; })} /></td>
                         <td>{transaction.date || '—'}</td>
                         <td>{transaction.txnType || '—'}</td>
                         <td>{transaction.docNumber || '—'}</td>
@@ -1455,13 +1479,20 @@ export default function QuickbooksPage() {
               ))}
             </div>
             <p className={styles.activitySummary} role="status">Showing {visibleRows.length} of {evidenceRows.length} register rows</p>
+            {selectedEvidenceRowIds.size > 0 ? <div className={styles.cardActions}>
+              <strong>{selectedEvidenceRowIds.size} selected</strong>
+              <button type="button" className={styles.btn + ' ' + styles.btnPrimary} onClick={() => downloadCsvFile(`Zevidt-evidence-register-${new Date().toISOString().slice(0, 10)}.csv`, ['Date', 'Status', 'Transaction type', 'Number', 'Name', 'Amount', 'Evidence', 'QBO ID'], visibleRows.filter((row, index) => selectedEvidenceRowIds.has(evidenceSelectionKey(row, index))).map((row) => [row.qboTxnDate, stateLabels[row.registerState], row.qboTxnType, row.qboTxnDocNumber, row.qboTxnVendor, row.qboTxnAmount, row.attachmentFilename, row.qboTxnId ?? row.attachedQboTxnId]))}>Export selected CSV</button>
+              <button type="button" className={styles.btn + ' ' + styles.btnLink} onClick={() => setSelectedEvidenceRowIds(new Set())}>Clear</button>
+            </div> : null}
             {visibleRows.length ? (
               <div className={styles.activityTableWrap}>
                 <table className={styles.registerTable}>
-                  <thead><tr><th>Date</th><th>Status</th><th>Transaction</th><th>Number</th><th>Name</th><th>Amount</th><th>Evidence</th><th>QuickBooks</th></tr></thead>
+                  <thead><tr><th><input type="checkbox" aria-label="Select all visible register rows" checked={visibleRows.length > 0 && visibleRows.every((row, index) => selectedEvidenceRowIds.has(evidenceSelectionKey(row, index)))} onChange={() => setSelectedEvidenceRowIds((current) => { const next = new Set(current); const allSelected = visibleRows.every((row, index) => next.has(evidenceSelectionKey(row, index))); visibleRows.forEach((row, index) => { const key = evidenceSelectionKey(row, index); allSelected ? next.delete(key) : next.add(key); }); return next; })} /></th><th>Date</th><th>Status</th><th>Transaction</th><th>Number</th><th>Name</th><th>Amount</th><th>Evidence</th><th>QuickBooks</th></tr></thead>
                   <tbody>{visibleRows.map((row, index) => {
                     const qboUrl = buildQboTransactionUrl(row.qboTxnType ?? null, row.qboTxnId ?? row.attachedQboTxnId ?? null);
-                    return <tr key={String(row.id ?? `${row.qboTxnId ?? 'unlinked'}-${row.matchedDocumentId ?? index}`)} className={styles.registerRow} onClick={() => setSelectedEvidenceRow(row)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedEvidenceRow(row); }}>
+                    const selectionKey = evidenceSelectionKey(row, index);
+                    return <tr key={selectionKey} className={styles.registerRow} onClick={() => setSelectedEvidenceRow(row)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedEvidenceRow(row); }}>
+                      <td><input type="checkbox" aria-label={`Select register row ${row.qboTxnDocNumber || row.qboTxnId || index + 1}`} checked={selectedEvidenceRowIds.has(selectionKey)} onClick={(event) => event.stopPropagation()} onChange={() => setSelectedEvidenceRowIds((current) => { const next = new Set(current); next.has(selectionKey) ? next.delete(selectionKey) : next.add(selectionKey); return next; })} /></td>
                       <td>{row.qboTxnDate || '—'}</td>
                       <td><span className={`${styles.registerStatus} ${styles[`registerStatus_${row.registerState}`]}`}>{stateLabels[row.registerState]}</span></td>
                       <td>{row.qboTxnType || (row.qboTxnId ? 'Transaction' : 'Unlinked document')}</td>

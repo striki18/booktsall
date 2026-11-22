@@ -24,19 +24,40 @@ describe('firm inbox API authorization', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('uses the first candidate transaction when no proposed register entry was stored', async () => {
+    mocks.requireAuth.mockResolvedValue({ user: { id: 'u1' }, realmId: 'realm-1' });
+    (fetch as any)
+      .mockResolvedValueOnce(response([{ id: 'i1', realm_id: 'realm-1', token: 'token' }]))
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response([{ id: 'd1', realm_id: 'realm-1', filename: 'receipt.pdf' }]))
+      .mockResolvedValueOnce(response([{ inbox_document_id: 'd1', register_entry_id: null, proposed_register_entry_id: null, candidate_qbo_txn_ids: ['txn-9'], match_status: 'potential', review_status: 'required', evidence_role: 'unassigned' }]))
+      .mockResolvedValueOnce(response([{ id: 'entry-9', qbo_txn_id: 'txn-9', qbo_txn_type: 'Invoice', qbo_txn_date: '2026-10-16', qbo_txn_vendor: 'Amy', qbo_txn_amount: 108, qbo_txn_doc_number: '1001' }]));
+    const body = await (await GET()).json();
+    expect(body.documents[0].proposed_transaction).toMatchObject({ qboTxnId: 'txn-9', documentNumber: '1001' });
+  });
+
   it('scopes all reads to the authenticated realm', async () => {
     mocks.requireAuth.mockResolvedValue({ user: { id: 'u1' }, realmId: 'realm-1' });
     (fetch as any)
       .mockResolvedValueOnce(response([{ id: 'i1', realm_id: 'realm-1', token: 'secret-link-token' }]))
       .mockResolvedValueOnce(response([{ id: 'r1', realm_id: 'realm-1', transaction_ids: [] }]))
-      .mockResolvedValueOnce(response([{ id: 'd1', realm_id: 'realm-1', filename: 'receipt.pdf' }]));
+      .mockResolvedValueOnce(response([{ id: 'd1', realm_id: 'realm-1', filename: 'receipt.pdf' }]))
+      .mockResolvedValueOnce(response([{ inbox_document_id: 'd1', register_entry_id: null, proposed_register_entry_id: 'entry-1', candidate_qbo_txn_ids: ['txn-1'], match_status: 'duplicate', review_status: 'required', evidence_role: 'unassigned', match_confidence: 91, match_evidence: { amount_match: true } }]))
+      .mockResolvedValueOnce(response([{ id: 'entry-1', qbo_txn_id: 'txn-1', qbo_txn_type: 'Invoice', qbo_txn_date: '2026-11-01', qbo_txn_vendor: 'Example customer', qbo_txn_amount: 125, qbo_txn_doc_number: '1001' }]));
 
     const result = await GET();
     const body = await result.json();
 
     expect(result.status).toBe(200);
     expect(body.inbox.realm_id).toBe('realm-1');
-    expect((fetch as any).mock.calls).toHaveLength(3);
+    expect(body.documents[0]).toMatchObject({
+      evidence_match_status: 'duplicate',
+      evidence_review_status: 'required',
+      evidence_role: 'unassigned',
+      evidence_match_confidence: 91,
+      proposed_transaction: expect.objectContaining({ qboTxnId: 'txn-1', documentNumber: '1001' }),
+    });
+    expect((fetch as any).mock.calls).toHaveLength(5);
     for (const [url] of (fetch as any).mock.calls) {
       expect(String(url)).toContain('realm_id=eq.realm-1');
     }
