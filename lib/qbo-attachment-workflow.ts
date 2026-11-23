@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { downloadAttachableBytes, getAttachables, getTransactionById, normalizeAttachables, uploadAttachable } from '@/lib/quickbooks';
+import { downloadAttachableBytes, getAttachableById, getAttachables, getAttachablesForTransaction, getTransactionById, normalizeAttachables, uploadAttachable } from '@/lib/quickbooks';
 import { validateEvidenceFile } from '@/lib/upload-validation';
 import { qboTransactionEntityType } from '@/lib/qbo-transaction-types';
 
@@ -418,7 +418,7 @@ export async function uploadFirstEvidenceItemToQbo(input: {
     const [latestItems, latestTransaction, latestAttachables] = await Promise.all([
       supabaseAdmin.from('qbo_evidence_items').select('id, evidence_role, review_status, qbo_attachment_status').eq('realm_id', input.realmId).eq('register_entry_id', register.id),
       getTransactionById(qboTxnType, qboTxnId, input.realmId),
-      getAttachables(input.realmId),
+      getAttachablesForTransaction(qboTxnType, qboTxnId, input.realmId),
     ]);
     if (latestItems.error) throw new Error('evidence-preflight-failed');
     if (!latestTransaction.transaction) throw new Error('transaction-preflight-failed');
@@ -500,9 +500,9 @@ export async function uploadFirstEvidenceItemToQbo(input: {
     .eq('realm_id', input.realmId).eq('id', item.id).eq('qbo_attachment_status', 'pending');
   if (uploadedStateError) throw new QboAttachmentWorkflowError('Upload is recorded; item status needs reconciliation before retry', 503);
 
-  let readback: Awaited<ReturnType<typeof getAttachables>>;
+  let readback: Awaited<ReturnType<typeof getAttachableById>>;
   try {
-    readback = await getAttachables(input.realmId);
+    readback = await getAttachableById(attachableId, input.realmId);
   } catch {
     await appendEvent({
       realmId: input.realmId, evidenceItemId: item.id, attemptId,

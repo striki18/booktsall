@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   maybeSingle: vi.fn(),
   resolveQuery: vi.fn(),
   getAttachables: vi.fn(),
+  getAttachablesForTransaction: vi.fn(),
+  getAttachableById: vi.fn(),
   getTransactionById: vi.fn(),
   normalizeAttachables: vi.fn(),
   downloadAttachableBytes: vi.fn(),
@@ -23,6 +25,8 @@ vi.mock('@/lib/supabase-admin', () => ({
 vi.mock('@/lib/quickbooks', () => ({
   downloadAttachableBytes: mocks.downloadAttachableBytes,
   getAttachables: mocks.getAttachables,
+  getAttachablesForTransaction: mocks.getAttachablesForTransaction,
+  getAttachableById: mocks.getAttachableById,
   getTransactionById: mocks.getTransactionById,
   normalizeAttachables: mocks.normalizeAttachables,
   uploadAttachable: mocks.uploadAttachable,
@@ -98,10 +102,9 @@ beforeEach(() => {
   mocks.storageFrom.mockReturnValue({ download: mocks.storedDownload });
   mocks.storedDownload.mockResolvedValue({ data: new Blob([pdfBytes]), error: null });
   mocks.getTransactionById.mockResolvedValue({ transaction: { Id: '500' }, httpStatus: 200 });
-  mocks.getAttachables
-    .mockResolvedValueOnce({ attachables: [], httpStatus: 200 })
-    .mockResolvedValueOnce({ attachables: [], httpStatus: 200 })
-    .mockResolvedValueOnce({ attachables: [{ attachableId: '9001', entityId: '500', entityType: 'Bill' }], httpStatus: 200 });
+  mocks.getAttachables.mockResolvedValue({ attachables: [], httpStatus: 200 });
+  mocks.getAttachablesForTransaction.mockResolvedValue({ attachables: [], httpStatus: 200 });
+  mocks.getAttachableById.mockResolvedValue({ attachables: [{ attachableId: '9001', entityId: '500', entityType: 'Bill' }], httpStatus: 200 });
   mocks.normalizeAttachables.mockImplementation((raw: unknown) => Array.isArray(raw) ? raw : []);
   mocks.uploadAttachable.mockResolvedValue({ attachable: { Id: '9001' }, httpStatus: 200 });
 });
@@ -161,9 +164,8 @@ describe('QBO attachment workflow completion', () => {
       if (mode === 'update') return { data: ++updates === 1 ? { id: evidenceItemId } : null, error: null };
       return single(table, mode);
     });
-    mocks.getAttachables.mockReset()
-      .mockResolvedValueOnce({ attachables: [], httpStatus: 200 })
-      .mockResolvedValueOnce({ attachables: [{ attachableId: 'new-evidence', entityId: '500', entityType: 'Bill' }], httpStatus: 200 });
+    mocks.getAttachables.mockReset().mockResolvedValue({ attachables: [], httpStatus: 200 });
+    mocks.getAttachablesForTransaction.mockResolvedValue({ attachables: [{ attachableId: 'new-evidence', entityId: '500', entityType: 'Bill' }], httpStatus: 200 });
 
     await expect(uploadFirstEvidenceItemToQbo({ evidenceItemId, realmId, actorUserId: 'reviewer-1' }))
       .rejects.toBeInstanceOf(Error);
@@ -176,9 +178,8 @@ describe('QBO attachment workflow completion', () => {
     mocks.maybeSingle.mockImplementation((table: string, mode: string) => mode === 'update'
       ? { data: { id: evidenceItemId }, error: null }
       : single(table, mode));
-    mocks.getAttachables.mockReset()
-      .mockResolvedValueOnce({ attachables: [], httpStatus: 200 })
-      .mockResolvedValueOnce({ attachables: [{ attachableId: 'new-evidence', entityId: '500', entityType: 'Bill' }], httpStatus: 200 });
+    mocks.getAttachables.mockReset().mockResolvedValue({ attachables: [], httpStatus: 200 });
+    mocks.getAttachablesForTransaction.mockResolvedValue({ attachables: [{ attachableId: 'new-evidence', entityId: '500', entityType: 'Bill' }], httpStatus: 200 });
 
     await expect(uploadFirstEvidenceItemToQbo({ evidenceItemId, realmId, actorUserId: 'reviewer-1' }))
       .rejects.toMatchObject({ status: 409 });
@@ -199,7 +200,9 @@ describe('QBO attachment workflow completion', () => {
     expect(mocks.insertedEvents.map((event) => event.event_type)).toEqual([
       'attempt_started', 'upload_succeeded', 'verification_succeeded',
     ]);
-    expect(mocks.getAttachables).toHaveBeenCalledTimes(3);
+    expect(mocks.getAttachables).toHaveBeenCalledOnce();
+    expect(mocks.getAttachablesForTransaction).toHaveBeenCalledWith('Bill', '500', realmId);
+    expect(mocks.getAttachableById).toHaveBeenCalledWith('9001', realmId);
     expect(mocks.updatedTables).not.toContain('qbo_evidence_register');
   });
 

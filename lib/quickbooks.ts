@@ -500,6 +500,54 @@ export async function getAttachables(requestedRealmId?: string) {
   });
 }
 
+/** Retrieve only attachments linked to one exact QuickBooks transaction. */
+export async function getAttachablesForTransaction(entityType: string, entityId: string, requestedRealmId?: string) {
+  const { qboTransactionEntityType } = await import('./qbo-transaction-types');
+  const canonicalType = qboTransactionEntityType(entityType);
+  if (!canonicalType || !/^\d+$/.test(entityId) || !requestedRealmId) {
+    throw new Error('A valid QuickBooks transaction type, ID, and realm ID are required');
+  }
+  return withApiRetry(async () => {
+    const accessToken = await getAccessToken(requestedRealmId);
+    const query = `SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Type = '${canonicalType}' AND AttachableRef.EntityRef.value = '${entityId}'`;
+    const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${requestedRealmId}/query?query=${encodeURIComponent(query)}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      await response.text();
+      throw quickBooksHttpError('QuickBooks transaction attachment verification failed', response.status);
+    }
+    const body = await response.json();
+    const rows = body?.QueryResponse?.Attachable;
+    return { attachables: Array.isArray(rows) ? rows : rows ? [rows] : [], httpStatus: response.status };
+  });
+}
+
+/** Read one Attachable by its exact QuickBooks ID for post-upload verification. */
+export async function getAttachableById(attachableId: string, requestedRealmId?: string) {
+  if (!/^\d+$/.test(attachableId) || !requestedRealmId) {
+    throw new Error('A valid QuickBooks attachment ID and realm ID are required');
+  }
+  return withApiRetry(async () => {
+    const accessToken = await getAccessToken(requestedRealmId);
+    const query = `SELECT * FROM Attachable WHERE Id = '${attachableId}'`;
+    const url = `https://sandbox-quickbooks.api.intuit.com/v3/company/${requestedRealmId}/query?query=${encodeURIComponent(query)}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      await response.text();
+      throw quickBooksHttpError('QuickBooks attachment read-back failed', response.status);
+    }
+    const body = await response.json();
+    const rows = body?.QueryResponse?.Attachable;
+    return { attachables: Array.isArray(rows) ? rows : rows ? [rows] : [], httpStatus: response.status };
+  });
+}
+
 /** Read one transaction by its exact QBO entity type and ID for write preflight. */
 export async function getTransactionById(entityType: string, entityId: string, requestedRealmId?: string) {
   const { qboTransactionEntityType } = await import('./qbo-transaction-types');
