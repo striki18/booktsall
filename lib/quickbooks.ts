@@ -547,80 +547,6 @@ export async function getTransactionById(entityType: string, entityId: string, r
  *
  * Phase 10B: Network/connection failures are retried up to 3 times with 5-second wait.
  */
-export interface DownloadFileResult {
-  success: boolean;
-  filePath?: string;
-  error?: string;
-  attachableId?: string;
-  fileName?: string;
-  timestamp?: string;
-}
-
-export async function downloadFile(
-  attachableId: string,
-  fileName: string,
-  destFolder: string,
-  failed?: DownloadFileResult[],
-  requestedRealmId?: string
-): Promise<DownloadFileResult> {
-  try {
-    // 1. Get valid access token (handles refresh automatically)
-    if (!requestedRealmId) throw new Error('Realm ID is required');
-    const accessToken = await getAccessToken(requestedRealmId);
-    // 2. Resolve realm ID
-    const stored = await getStoredToken(requestedRealmId);
-    const realmId = requestedRealmId;
-    if (!realmId) throw new Error('Realm ID not available');
-
-    // 3. Build the download URL using the sandbox domain
-    const sandboxDomain = 'https://sandbox-quickbooks.api.intuit.com';
-    const downloadUrl = `${sandboxDomain}/v3/company/${realmId}/download/${attachableId}`;
-
-    console.log('🔍 Download request URL:', downloadUrl);
-
-    // Resolve QBO's temporary URL before writing actual file bytes.
-    const { bytes: buffer } = await downloadAttachableBytes(attachableId, realmId);
-
-    if (buffer.length === 0) {
-      const failure: DownloadFileResult = {
-        success: false,
-        error: 'Downloaded file is empty',
-        attachableId,
-        fileName,
-        timestamp: new Date().toISOString(),
-      };
-      if (failed) failed.push(failure);
-      return failure;
-    }
-
-    // 6. Ensure destination folder exists
-    const fs = await import('fs');
-    const path = await import('path');
-    if (!fs.existsSync(destFolder)) {
-      fs.mkdirSync(destFolder, { recursive: true });
-    }
-
-    // 7. Save the file
-    const filePath = path.join(destFolder, fileName);
-    fs.writeFileSync(filePath, buffer);
-
-    console.log('🔍 File saved to:', filePath, 'Size:', buffer.length, 'bytes');
-
-    return { success: true, filePath, timestamp: new Date().toISOString() };
-  } catch (e: any) {
-    console.error('Download error:', e);
-    const failure: DownloadFileResult = {
-      success: false,
-      error: e.message,
-      attachableId,
-      fileName,
-      timestamp: new Date().toISOString(),
-    };
-    if (failed) failed.push(failure);
-    return failure;
-  }
-}
-
 /** Read an existing sandbox attachment into memory for exact-byte deduplication. */
 export async function downloadAttachableBytes(attachableId: string, requestedRealmId?: string) {
   if (!requestedRealmId || !/^\d+$/.test(attachableId)) {
@@ -664,15 +590,6 @@ export async function downloadAttachableBytes(attachableId: string, requestedRea
  *
  * Phase 10C: Provides real-time progress information during bulk downloads.
  */
-export interface DownloadProgress {
-  totalAttachments: number;
-  completed: number;
-  successful: number;
-  failed: number;
-  currentFile?: string;
-  stage: 'started' | 'in_progress' | 'completed' | 'failed';
-}
-
 /**
  * Bulk download all attachments from matched evidence-register records.
  *
@@ -691,175 +608,6 @@ export interface DownloadProgress {
  *
  * Phase 10C: Adds progress counter with real-time updates.
  */
-export async function downloadAllAttachments(
-  matched: any[],
-  startDate: string,
-  endDate: string,
-  onProgress?: (progress: DownloadProgress) => void,
-  requestedRealmId?: string
-): Promise<{
-  successful: Array<{
-    attachableId: string;
-    fileName: string;
-    txnType: string;
-    docNumber: string;
-    filePath: string;
-    fileSize: number;
-  }>;
-  failed: Array<{
-    attachableId: string | null;
-    fileName: string;
-    error: string;
-    timestamp: string;
-  }>;
-  totalAttempted: number;
-  successfulCount: number;
-  failedCount: number;
-}> {
-  const fs = await import('fs');
-  const path = await import('path');
-
-  // Destination folder (project root / attachments) - Phase 5B behavior
-  const destFolder = path.join(process.cwd(), 'attachments');
-
-  // Ensure destination folder exists
-  if (!fs.existsSync(destFolder)) {
-    fs.mkdirSync(destFolder, { recursive: true });
-  }
-
-  // Sanitize function - Phase 5B behavior
-  const sanitize = (s: string) => s.replace(/[\\/:*?"<>|]/g, '_');
-
-  const successful: Array<{
-    attachableId: string;
-    fileName: string;
-    txnType: string;
-    docNumber: string;
-    filePath: string;
-    fileSize: number;
-  }> = [];
-
-  const failed: Array<{
-    attachableId: string | null;
-    fileName: string;
-    error: string;
-    timestamp: string;
-  }> = [];
-
-  // Filter to only records with attachments AND within the date range
-  const attachmentsToDownload = matched.filter(m => {
-    if (!m.hasAttachment) return false;
-    if (!m.date) return false;
-    return m.date >= startDate && m.date <= endDate;
-  });
-  const totalAttachments = attachmentsToDownload.length;
-
-  // Progress tracking
-  let completed = 0;
-  let successfulCount = 0;
-  let failedCount = 0;
-
-  const emitProgress = (stage: DownloadProgress['stage'], currentFile?: string) => {
-    if (onProgress) {
-      onProgress({
-        totalAttachments,
-        completed,
-        successful: successfulCount,
-        failed: failedCount,
-        currentFile,
-        stage,
-      });
-    }
-    // Also log to console for visibility
-    if (stage === 'started') {
-      console.log(`[downloadAllAttachments] Starting bulk download for ${totalAttachments} attachments (${startDate} to ${endDate})`);
-    } else if (stage === 'in_progress') {
-      console.log(`[downloadAllAttachments] Progress: ${completed}/${totalAttachments} (Successful: ${successfulCount}, Failed: ${failedCount}) - Current: ${currentFile}`);
-    } else if (stage === 'completed') {
-      console.log(`[downloadAllAttachments] Complete: ${successfulCount} successful, ${failedCount} failed, ${totalAttachments} total`);
-    } else if (stage === 'failed') {
-      console.log(`[downloadAllAttachments] Failed: ${completed}/${totalAttachments} (Successful: ${successfulCount}, Failed: ${failedCount})`);
-    }
-  };
-
-  emitProgress('started');
-
-  for (const record of attachmentsToDownload) {
-    const attachableId = record.attachableId;
-    const originalFileName = record.fileName || 'unknown';
-    const txnType = record.txnType || (record.orphaned ? 'Orphaned' : 'Unknown');
-    const docNumber = record.docNumber || (record.orphaned ? 'N/A' : 'Unknown');
-
-    // Skip if no attachableId (will be recorded as failed)
-    if (!attachableId) {
-      const failure = {
-        attachableId: null,
-        fileName: originalFileName,
-        error: 'Missing attachableId',
-        timestamp: new Date().toISOString(),
-      };
-      failed.push(failure);
-      failedCount++;
-      completed++;
-      emitProgress('in_progress', originalFileName);
-      console.log(`[downloadAllAttachments] Skipped: Missing attachableId for ${originalFileName}`);
-      continue;
-    }
-
-    // Generate Phase 5B filename: {txnType}_{docNumber}_{originalFileName}
-    const newFileName = `${sanitize(txnType)}_${sanitize(docNumber)}_${originalFileName}`;
-
-    console.log(`[downloadAllAttachments] Downloading ${attachableId} -> ${newFileName}`);
-    emitProgress('in_progress', newFileName);
-
-    // Reuse downloadFile() - Phase 5A implementation (with retry)
-    const result = await downloadFile(attachableId, newFileName, destFolder, undefined, requestedRealmId);
-
-    completed++;
-    if (result.success) {
-      // Get file size
-      let fileSize = 0;
-      if (result.filePath && fs.existsSync(result.filePath)) {
-        const stats = fs.statSync(result.filePath);
-        fileSize = stats.size;
-      }
-
-      successful.push({
-        attachableId,
-        fileName: newFileName,
-        txnType,
-        docNumber,
-        filePath: result.filePath!,
-        fileSize,
-      });
-      successfulCount++;
-      console.log(`[downloadAllAttachments] Success: ${attachableId} (${fileSize} bytes)`);
-    } else {
-      failed.push({
-        attachableId,
-        fileName: newFileName,
-        error: result.error || 'Unknown error',
-        timestamp: result.timestamp ?? new Date().toISOString(),
-      });
-      failedCount++;
-      console.log(`[downloadAllAttachments] Failed: ${attachableId} - ${result.error}`);
-    }
-    emitProgress('in_progress', newFileName);
-  }
-
-  const totalAttempted = totalAttachments;
-
-  emitProgress('completed');
-
-  return {
-    successful,
-    failed,
-    totalAttempted,
-    successfulCount,
-    failedCount,
-  };
-}
-
 /**
  * Normalize the TransactionList report into a flat array of transaction objects.
  *
@@ -872,7 +620,10 @@ export async function downloadAllAttachments(
  *     date: string | null,    // Date column value
  *     vendor: string | null,  // Name column value
  *     amount: number | null, // Amount column value converted to number
- *     docNumber: string | null // Num column value
+ *     docNumber: string | null, // Num column value
+ *     account: string | null, // Account column value
+ *     split: string | null, // Split column value
+ *     uncategorized: boolean // Explicit QBO Uncategorized account/split
  *   }
  *
  * Fields that are missing or empty are preserved as null.
@@ -899,6 +650,8 @@ export function normalizeTransactionList(report: any) {
     const nameIdx = idx('Name');
     const amountIdx = idx('Amount');
     const numIdx = idx('Num');
+    const accountIdx = idx('Account');
+    const splitIdx = idx('Split');
 
     const rawTxnId = txnTypeIdx !== -1 ? getId(txnTypeIdx) : null;
     const rawTxnType = txnTypeIdx !== -1 ? getValue(txnTypeIdx) : null;
@@ -906,6 +659,8 @@ export function normalizeTransactionList(report: any) {
     const rawVendor = nameIdx !== -1 ? getValue(nameIdx) : null;
     const rawAmount = amountIdx !== -1 ? getValue(amountIdx) : null;
     const rawDocNumber = numIdx !== -1 ? getValue(numIdx) : null;
+    const rawAccount = accountIdx !== -1 ? getValue(accountIdx) : null;
+    const rawSplit = splitIdx !== -1 ? getValue(splitIdx) : null;
 
     const amountNumber = rawAmount !== null && rawAmount !== '' ? Number(rawAmount) : null;
 
@@ -923,9 +678,23 @@ export function normalizeTransactionList(report: any) {
       vendor: rawVendor ?? null,
       amount: amountNumber,
       docNumber: rawDocNumber ?? null,
+      account: rawAccount ?? null,
+      split: rawSplit ?? null,
+      uncategorized: isExplicitlyUncategorized(rawAccount, rawSplit),
     };
   });
   return normalized;
+}
+
+/**
+ * QBO exposes categorization through the TransactionList Account and Split
+ * columns. Only explicit Uncategorized account names qualify; missing columns
+ * or blank values are unknown, not uncategorized.
+ */
+export function isExplicitlyUncategorized(account: unknown, split: unknown): boolean {
+  return [account, split].some((value) =>
+    typeof value === 'string' && /(^|\s|:|-)uncategorized(?:\s|$)/i.test(value.trim()),
+  );
 }
 
 /**

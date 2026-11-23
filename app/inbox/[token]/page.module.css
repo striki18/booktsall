@@ -190,6 +190,24 @@
   margin-left: var(--space-4);
 }
 
+.questions { margin: 26px 0; padding: 22px; border: 1px solid #dbe2f0; border-radius: 16px; background: #f8faff; }
+.questionsHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+.questionsHeader h2 { margin: 4px 0 0; color: #101828; font-size: 22px; letter-spacing: -.025em; }
+.questionsHeader > span { color: #3158c8; font-size: 13px; font-weight: 700; }
+.eyebrow { color: #3e6ae1; font-size: 11px; font-weight: 800; letter-spacing: .12em; }
+.questionList { display: grid; gap: 12px; }
+.questionCard { padding: 18px; border: 1px solid #e1e6ef; border-radius: 13px; background: #fff; }
+.transactionSummary { display: flex; flex-direction: column; gap: 4px; color: #344054; }
+.transactionSummary span { color: #667085; font-size: 13px; }
+.questionPrompt { margin: 14px 0; color: #101828; font-size: 15px; line-height: 1.55; }
+.previousReply { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: #f2f4f7; color: #475467; font-size: 13px; }
+.replyField { display: grid; gap: 6px; color: #475467; font-size: 13px; font-weight: 650; }
+.replyField textarea { width: 100%; resize: vertical; border: 1px solid #cfd6e3; border-radius: 10px; padding: 10px 12px; color: #101828; font: inherit; font-weight: 400; }
+.replyField textarea:focus { border-color: #3e6ae1; outline: 3px solid rgba(62,106,225,.12); }
+.replyButton { margin-top: 10px; border: 0; border-radius: 9px; padding: 10px 15px; background: #3e6ae1; color: #fff; font-weight: 700; cursor: pointer; }
+.replyButton:disabled { cursor: not-allowed; opacity: .5; }
+.questionNotice { margin: 0 0 12px; color: #3158c8; font-size: 13px; }
+
 /* Public upload experience. */
 .container {
   padding: 40px 20px;

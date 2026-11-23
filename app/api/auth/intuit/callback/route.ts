@@ -56,7 +56,14 @@ export async function GET(request: Request) {
   }
 
   const expectedRealmId = process.env.INTUIT_REALM_ID;
-  if (!expectedRealmId || realmId !== expectedRealmId) {
+  const previouslyAuthorizedRealms = new Set<string>([
+    ...(Array.isArray(user.app_metadata?.qbo_realm_ids) ? user.app_metadata.qbo_realm_ids.filter((value: unknown): value is string => typeof value === 'string') : []),
+    ...(typeof user.app_metadata?.realm_id === 'string' ? [user.app_metadata.realm_id] : []),
+  ]);
+  // Keep the isolated development realm guard for the first connection. Once
+  // the signed-in account already owns a connected company, another realm may
+  // be added only through this fresh Intuit consent callback.
+  if (!expectedRealmId || (previouslyAuthorizedRealms.size === 0 && realmId !== expectedRealmId)) {
     return NextResponse.json({ error: 'QuickBooks company is not authorized' }, { status: 403 });
   }
 
@@ -104,11 +111,7 @@ export async function GET(request: Request) {
     if (membershipError) throw membershipError;
 
     // Bind the selected company to server-controlled user metadata.
-    const realmIds = new Set<string>([
-      ...(Array.isArray(user.app_metadata?.qbo_realm_ids) ? user.app_metadata.qbo_realm_ids : []),
-      ...(typeof user.app_metadata?.realm_id === 'string' ? [user.app_metadata.realm_id] : []),
-      realmId,
-    ]);
+    const realmIds = new Set<string>([...previouslyAuthorizedRealms, realmId]);
     const { error: metadataError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
       app_metadata: { ...user.app_metadata, realm_id: realmId, qbo_realm_ids: [...realmIds] },
     });

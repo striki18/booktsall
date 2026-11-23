@@ -10,8 +10,8 @@ import {
   getAttachables,
   normalizeTransactionList,
   normalizeAttachables,
-  downloadFile,
 } from './quickbooks';
+import { downloadFile } from './quickbooks-files';
 
 import { applyStoredEvidenceReviewDecisions, buildQboEvidenceRegister } from './qbo-evidence-register';
 import { addApprovedEvidenceItemsToPackage } from './evidence-items-package';
@@ -434,7 +434,7 @@ export async function generatePackage(
       const os = await import('os');
       const path = await import('path');
       const fs = await import('fs');
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'auditready-qbo-attachments-'));
+      const tempDir = fs.mkdtempSync(path.join(/* turbopackIgnore: true */ os.tmpdir(), 'zevidt-qbo-attachments-'));
 
       let qboSuccessCount = 0;
       let qboFailedCount = 0;
@@ -451,7 +451,7 @@ export async function generatePackage(
 
             if (result.success && result.filePath) {
               // Read the downloaded file into Buffer
-              const buffer = fs.readFileSync(result.filePath);
+              const buffer = fs.readFileSync(/* turbopackIgnore: true */ result.filePath);
 
               if (buffer.length > 0) {
                 // Build safe deterministic ZIP filename from transaction metadata + original filename
@@ -512,7 +512,7 @@ export async function generatePackage(
       } finally {
         // Clean up temporary directory
         try {
-          fs.rmSync(tempDir, { recursive: true, force: true });
+          fs.rmSync(/* turbopackIgnore: true */ tempDir, { recursive: true, force: true });
         } catch (cleanupError) {
           console.warn(`Failed to clean up temp directory ${tempDir}:`, cleanupError);
         }
@@ -625,7 +625,7 @@ export async function generatePackage(
       return handleFailure('ZIP Verification', 'Generated ZIP failed package verification', { errors: zipVerification.errors });
     }
     const fs = await import('fs');
-    const zipStat = fs.statSync(zipPath);
+    const zipStat = fs.statSync(/* turbopackIgnore: true */ zipPath);
     stats.zipSizeBytes = zipStat.size;
 
     logProgress(

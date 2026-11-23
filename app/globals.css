@@ -10,6 +10,8 @@
   --zevidt-green: #176b52;
   --zevidt-green-dark: #10513e;
   --zevidt-green-soft: #e8f3ee;
+  --font-geist-sans: "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
+  --font-geist-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
 }
 
 @theme inline {

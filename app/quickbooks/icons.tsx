@@ -144,6 +144,7 @@ export function WorkspaceHeader({
         </Link>
 
         <nav className="workspacePrimaryNav" aria-label="Primary navigation">
+          <Link href="/firm" className={pathname === '/firm' ? 'isCurrent' : ''}>Companies</Link>
           <Link href="/quickbooks" className={pathname === '/quickbooks' ? 'isCurrent' : ''} onClick={(event) => {
             if (pathname === '/quickbooks' && onSelectSection) {
               event.preventDefault();

@@ -96,6 +96,9 @@ interface WorkspaceTransaction {
   vendor: string | null;
   amount: number | null;
   docNumber: string | null;
+  account: string | null;
+  split: string | null;
+  uncategorized: boolean;
 }
 
 interface WorkspaceAttachable {
@@ -105,6 +108,19 @@ interface WorkspaceAttachable {
   entityType: string | null;
   entityId: string | null;
   orphaned: boolean;
+}
+
+interface TransactionQuestion {
+  id: string;
+  qbo_txn_id: string;
+  qbo_txn_type: string | null;
+  qbo_txn_date: string | null;
+  qbo_txn_vendor: string | null;
+  qbo_txn_amount: number | null;
+  qbo_txn_doc_number: string | null;
+  audience: 'client' | 'accountant';
+  status: 'open' | 'answered' | 'resolved';
+  messages: Array<{ id: string; author_role: 'firm' | 'client' | 'accountant'; body: string; created_at: string }>;
 }
 
 type NavSection = 'overview' | 'generate' | 'evidence' | 'missing' | 'attachments' | 'requirements';
@@ -342,11 +358,19 @@ export default function QuickbooksPage() {
   const [activitySearch, setActivitySearch] = useState('');
   const [activityType, setActivityType] = useState('ALL');
   const [activityFileStatus, setActivityFileStatus] = useState<'ALL' | 'WITH_FILES' | 'WITHOUT_FILES'>('ALL');
+  const [activityCategoryStatus, setActivityCategoryStatus] = useState<'ALL' | 'UNCATEGORIZED' | 'CATEGORIZED'>('ALL');
   const [activityMinAmount, setActivityMinAmount] = useState('');
   const [activityMaxAmount, setActivityMaxAmount] = useState('');
   const [activitySort, setActivitySort] = useState<'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc' | 'name_asc'>('date_desc');
   const [activityFiltersOpen, setActivityFiltersOpen] = useState(false);
   const [selectedActivityTxnIds, setSelectedActivityTxnIds] = useState<Set<string>>(new Set());
+  const [questionTransaction, setQuestionTransaction] = useState<WorkspaceTransaction | null>(null);
+  const [questionAudience, setQuestionAudience] = useState<'client' | 'accountant'>('client');
+  const [questionBody, setQuestionBody] = useState('');
+  const [questionSaving, setQuestionSaving] = useState(false);
+  const [questionNotice, setQuestionNotice] = useState<string | null>(null);
+  const [transactionQuestions, setTransactionQuestions] = useState<TransactionQuestion[]>([]);
+  const [questionReplies, setQuestionReplies] = useState<Record<string, string>>({});
 
   // Generation state
   const [generating, setGenerating] = useState(false);
@@ -393,6 +417,78 @@ export default function QuickbooksPage() {
     return localDateValue(date);
   });
   const [registerEndDate, setRegisterEndDate] = useState(() => localDateValue(new Date()));
+
+  const loadTransactionQuestions = useCallback(async () => {
+    if (authStatus !== 'signed_in' || !realmId) return;
+    const response = await fetch('/api/transaction-questions', { cache: 'no-store' });
+    if (!response.ok) return;
+    const body = await response.json();
+    if (Array.isArray(body)) setTransactionQuestions(body);
+  }, [authStatus, realmId]);
+
+  useEffect(() => { void loadTransactionQuestions(); }, [loadTransactionQuestions]);
+
+  const createTransactionQuestion = async () => {
+    if (!questionTransaction?.txnId || !questionBody.trim()) return;
+    setQuestionSaving(true);
+    setQuestionNotice(null);
+    try {
+      const response = await fetch('/api/transaction-questions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          qboTxnId: questionTransaction.txnId, qboTxnType: questionTransaction.txnType,
+          qboTxnDate: questionTransaction.date, qboTxnVendor: questionTransaction.vendor,
+          qboTxnAmount: questionTransaction.amount, qboTxnDocNumber: questionTransaction.docNumber,
+          audience: questionAudience, question: questionBody.trim(),
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || 'Unable to create question');
+      setQuestionTransaction(null);
+      setQuestionBody('');
+      setQuestionNotice(questionAudience === 'client' ? 'Client question added to the no-login collection link.' : 'Accountant question added to the company queue.');
+      await loadTransactionQuestions();
+    } catch (error) {
+      setQuestionNotice(error instanceof Error ? error.message : 'Unable to create question');
+    } finally {
+      setQuestionSaving(false);
+    }
+  };
+
+  const replyToTransactionQuestion = async (question: TransactionQuestion) => {
+    const body = questionReplies[question.id]?.trim();
+    if (!body) return;
+    setQuestionSaving(true);
+    try {
+      const response = await fetch(`/api/transaction-questions/${encodeURIComponent(question.id)}/messages`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to save reply');
+      setQuestionReplies((current) => ({ ...current, [question.id]: '' }));
+      await loadTransactionQuestions();
+    } catch (error) {
+      setQuestionNotice(error instanceof Error ? error.message : 'Unable to save reply');
+    } finally {
+      setQuestionSaving(false);
+    }
+  };
+
+  const resolveTransactionQuestion = async (question: TransactionQuestion) => {
+    setQuestionSaving(true);
+    try {
+      const response = await fetch('/api/transaction-questions', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: question.id, action: 'resolve' }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to resolve question');
+      await loadTransactionQuestions();
+    } catch (error) {
+      setQuestionNotice(error instanceof Error ? error.message : 'Unable to resolve question');
+    } finally {
+      setQuestionSaving(false);
+    }
+  };
 
   const loadEvidenceRules = useCallback(async () => {
     setRequirementsLoading(true);
@@ -1010,9 +1106,10 @@ export default function QuickbooksPage() {
     const transactions = allTransactions
       .filter((transaction) => activityType === 'ALL' || transaction.txnType === activityType)
       .filter((transaction) => activityFileStatus === 'ALL' || (activityFileStatus === 'WITH_FILES' ? transactionIdsWithFiles.has(transaction.txnId) : !transactionIdsWithFiles.has(transaction.txnId)))
+      .filter((transaction) => activityCategoryStatus === 'ALL' || (activityCategoryStatus === 'UNCATEGORIZED' ? transaction.uncategorized : !transaction.uncategorized))
       .filter((transaction) => minAmount == null || (transaction.amount != null && transaction.amount >= minAmount))
       .filter((transaction) => maxAmount == null || (transaction.amount != null && transaction.amount <= maxAmount))
-      .filter((transaction) => !normalizedSearch || [transaction.vendor, transaction.docNumber, transaction.txnType, transaction.txnId].some((value) => value?.toLowerCase().includes(normalizedSearch)))
+      .filter((transaction) => !normalizedSearch || [transaction.vendor, transaction.docNumber, transaction.txnType, transaction.txnId, transaction.account, transaction.split].some((value) => value?.toLowerCase().includes(normalizedSearch)))
       .sort((left, right) => {
         if (activitySort === 'date_asc') return (left.date || '').localeCompare(right.date || '');
         if (activitySort === 'amount_desc') return (right.amount ?? Number.NEGATIVE_INFINITY) - (left.amount ?? Number.NEGATIVE_INFINITY);
@@ -1068,10 +1165,11 @@ export default function QuickbooksPage() {
           <label className={styles.activitySearchField}><span>Search</span><input type="search" value={activitySearch} onChange={(event) => setActivitySearch(event.target.value)} placeholder="Name, number, type, or ID" /></label>
           <label><span>Type</span><select value={activityType} onChange={(event) => setActivityType(event.target.value)}><option value="ALL">All types</option>{transactionTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
           <label><span>Documents</span><select value={activityFileStatus} onChange={(event) => setActivityFileStatus(event.target.value as 'ALL' | 'WITH_FILES' | 'WITHOUT_FILES')}><option value="ALL">All transactions</option><option value="WITH_FILES">With documents</option><option value="WITHOUT_FILES">Without documents</option></select></label>
+          <label><span>Category</span><select value={activityCategoryStatus} onChange={(event) => setActivityCategoryStatus(event.target.value as 'ALL' | 'UNCATEGORIZED' | 'CATEGORIZED')}><option value="ALL">All categories</option><option value="UNCATEGORIZED">Uncategorized only</option><option value="CATEGORIZED">Categorized only</option></select></label>
           <label><span>Min amount</span><input type="number" min="0" step="0.01" value={activityMinAmount} onChange={(event) => setActivityMinAmount(event.target.value)} placeholder="0" /></label>
           <label><span>Max amount</span><input type="number" min="0" step="0.01" value={activityMaxAmount} onChange={(event) => setActivityMaxAmount(event.target.value)} placeholder="Any" /></label>
           <label><span>Sort</span><select value={activitySort} onChange={(event) => setActivitySort(event.target.value as typeof activitySort)}><option value="date_desc">Newest first</option><option value="date_asc">Oldest first</option><option value="amount_desc">Amount: high to low</option><option value="amount_asc">Amount: low to high</option><option value="name_asc">Name: A–Z</option></select></label>
-          {(activitySearch || activityType !== 'ALL' || activityFileStatus !== 'ALL' || activityMinAmount || activityMaxAmount || activitySort !== 'date_desc') ? <button type="button" className={styles.btn + ' ' + styles.btnLink} onClick={() => { setActivitySearch(''); setActivityType('ALL'); setActivityFileStatus('ALL'); setActivityMinAmount(''); setActivityMaxAmount(''); setActivitySort('date_desc'); }}>Clear</button> : null}
+          {(activitySearch || activityType !== 'ALL' || activityFileStatus !== 'ALL' || activityCategoryStatus !== 'ALL' || activityMinAmount || activityMaxAmount || activitySort !== 'date_desc') ? <button type="button" className={styles.btn + ' ' + styles.btnLink} onClick={() => { setActivitySearch(''); setActivityType('ALL'); setActivityFileStatus('ALL'); setActivityCategoryStatus('ALL'); setActivityMinAmount(''); setActivityMaxAmount(''); setActivitySort('date_desc'); }}>Clear</button> : null}
         </div> : null}
 
         {connectionStatus !== 'connected' ? (
@@ -1105,7 +1203,9 @@ export default function QuickbooksPage() {
                     <th scope="col">Number</th>
                     <th scope="col">Name</th>
                     <th scope="col">Amount</th>
+                    <th scope="col">Category</th>
                     <th scope="col">QuickBooks files</th>
+                    <th scope="col"><span className="sr-only">Ask for information</span></th>
                     <th scope="col"><span className="sr-only">QuickBooks link</span></th>
                   </tr>
                 </thead>
@@ -1125,6 +1225,7 @@ export default function QuickbooksPage() {
                         <td>{transaction.docNumber || '—'}</td>
                         <td>{transaction.vendor || '—'}</td>
                         <td>{transaction.amount == null ? '—' : `${company?.CompanyInfo?.Currency ? `${company.CompanyInfo.Currency} ` : ''}${transaction.amount.toLocaleString()}`}</td>
+                        <td>{transaction.uncategorized ? 'Uncategorized' : (transaction.split || transaction.account || '—')}</td>
                         <td>
                           {files.length === 0 ? (
                             <span className={styles.noLinkedFile}>No linked file</span>
@@ -1135,6 +1236,7 @@ export default function QuickbooksPage() {
                             </details>
                           )}
                         </td>
+                        <td><button type="button" className={styles.btn + ' ' + styles.btnSecondary} onClick={() => { setQuestionTransaction(transaction); setQuestionAudience('client'); setQuestionBody(transaction.uncategorized ? 'What was this transaction for, and which category should we use?' : 'Please provide the missing information or supporting context for this transaction.'); }}>{transaction.uncategorized ? 'Ask about category' : 'Ask'}</button></td>
                         <td>{qboUrl ? <a className={styles.activityQboLink} href={qboUrl} target="_blank" rel="noopener noreferrer">Open in QBO</a> : '—'}</td>
                       </tr>
                     );
@@ -1146,6 +1248,26 @@ export default function QuickbooksPage() {
         ) : null}
       </section>
     );
+  };
+
+  const renderTransactionQuestionQueue = () => {
+    const activeQuestions = transactionQuestions.filter((question) => question.status !== 'resolved');
+    if (!activeQuestions.length && !questionNotice) return null;
+    return <section className={styles.card} aria-labelledby="transaction-questions-title">
+      <div className={styles.registerHeading}>
+        <div><h2 id="transaction-questions-title" className={styles.cardTitle}>Questions and follow-ups</h2><p className={styles.activityDescription}>Client questions appear on the company’s no-login collection link. Accountant questions stay inside the company workspace.</p></div>
+      </div>
+      {questionNotice ? <p className={styles.notice} role="status">{questionNotice}</p> : null}
+      <div className={styles.questionQueue}>{activeQuestions.map((question) => <article key={question.id} className={styles.questionQueueItem}>
+        <div className={styles.questionQueueHeading}>
+          <div><strong>{question.qbo_txn_type || 'Transaction'} {question.qbo_txn_doc_number || question.qbo_txn_id}</strong><span>{[question.qbo_txn_date, question.qbo_txn_vendor, question.qbo_txn_amount == null ? null : question.qbo_txn_amount.toLocaleString()].filter(Boolean).join(' · ')}</span></div>
+          <span>{question.audience === 'client' ? 'Ask client' : 'Ask accountant'} · {question.status}</span>
+        </div>
+        <div className={styles.questionMessages}>{question.messages.map((message) => <p key={message.id}><strong>{message.author_role === 'firm' ? 'Team' : message.author_role === 'client' ? 'Client' : 'Accountant'}:</strong> {message.body}</p>)}</div>
+        {question.audience === 'accountant' ? <div className={styles.questionReplyRow}><input value={questionReplies[question.id] || ''} maxLength={4000} onChange={(event) => setQuestionReplies((current) => ({ ...current, [question.id]: event.target.value }))} placeholder="Reply for the company team" /><button type="button" className={styles.btn + ' ' + styles.btnPrimary} disabled={questionSaving || !questionReplies[question.id]?.trim()} onClick={() => void replyToTransactionQuestion(question)}>Reply</button></div> : null}
+        <button type="button" className={styles.btn + ' ' + styles.btnLink} disabled={questionSaving} onClick={() => void resolveTransactionQuestion(question)}>Mark resolved</button>
+      </article>)}</div>
+    </section>;
   };
 
   const renderOverview = () => {
@@ -1194,6 +1316,7 @@ export default function QuickbooksPage() {
         </section>
 
         {renderWorkspaceActivity()}
+        {renderTransactionQuestionQueue()}
       </div>
     );
   };
@@ -1962,6 +2085,17 @@ export default function QuickbooksPage() {
 
         {/* Settings Modal */}
         {showSettings && renderSettings()}
+        {questionTransaction ? <div className={styles.modalOverlay} onClick={() => setQuestionTransaction(null)}>
+          <div className={styles.modal} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="ask-transaction-title">
+            <div className={styles.modalHeader}><h3 id="ask-transaction-title">Ask about this transaction</h3><button className={styles.modalClose} onClick={() => setQuestionTransaction(null)} aria-label="Close"><CloseIcon /></button></div>
+            <div className={styles.modalBody}>
+              <p className={styles.activityDescription}>{questionTransaction.txnType || 'Transaction'} {questionTransaction.docNumber || questionTransaction.txnId} · {questionTransaction.vendor || 'No name'} · {questionTransaction.amount?.toLocaleString() ?? 'No amount'}</p>
+              <label className={styles.questionFormField}><span>Who should answer?</span><select value={questionAudience} onChange={(event) => setQuestionAudience(event.target.value as 'client' | 'accountant')}><option value="client">Client — show on no-login link</option><option value="accountant">Accountant — internal company queue</option></select></label>
+              <label className={styles.questionFormField}><span>Question</span><textarea rows={5} maxLength={4000} value={questionBody} onChange={(event) => setQuestionBody(event.target.value)} /></label>
+              <button type="button" className={styles.btn + ' ' + styles.btnPrimary} disabled={questionSaving || !questionBody.trim()} onClick={() => void createTransactionQuestion()}>{questionSaving ? 'Saving…' : questionAudience === 'client' ? 'Add to client link' : 'Ask accountant'}</button>
+            </div>
+          </div>
+        </div> : null}
       </main>
     </div>
   );

@@ -32,6 +32,9 @@ vi.mock('../lib/quickbooks', () => ({
   getAttachables: vi.fn(),
   normalizeTransactionList: vi.fn(),
   normalizeAttachables: vi.fn(),
+}));
+
+vi.mock('../lib/quickbooks-files', () => ({
   downloadFile: vi.fn(),
 }));
 
@@ -92,7 +95,8 @@ vi.mock('path', () => mockPath);
 vi.mock('fs', () => mockFs);
 
 // Import mocked modules and the module under test
-import { getTransactions, getAttachables, normalizeTransactionList, normalizeAttachables, downloadFile } from '../lib/quickbooks';
+import { getTransactions, getAttachables, normalizeTransactionList, normalizeAttachables } from '../lib/quickbooks';
+import { downloadFile } from '../lib/quickbooks-files';
 import { applyStoredEvidenceReviewDecisions, buildQboEvidenceRegister, populateQboEvidenceRegister, getRegisterEntries, updateRegisterForDocument } from '../lib/qbo-evidence-register';
 import { generateAndSaveCsvs, splitEvidenceRegister } from '../lib/output';
 import { generateZip, verifyZip } from '../lib/zip';

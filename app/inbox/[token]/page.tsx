@@ -22,6 +22,17 @@ interface UploadedFile {
   processing_error?: string | null;
 }
 
+interface ClientQuestion {
+  id: string;
+  qbo_txn_type: string | null;
+  qbo_txn_date: string | null;
+  qbo_txn_vendor: string | null;
+  qbo_txn_amount: number | null;
+  qbo_txn_doc_number: string | null;
+  status: 'open' | 'answered';
+  messages: Array<{ id: string; author_role: 'firm' | 'client' | 'accountant'; body: string; created_at: string }>;
+}
+
 export default function InboxPage({
   params,
 }: {
@@ -37,6 +48,10 @@ export default function InboxPage({
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [token, setToken] = useState<string | null>(null);
+  const [questions, setQuestions] = useState<ClientQuestion[]>([]);
+  const [questionReplies, setQuestionReplies] = useState<Record<string, string>>({});
+  const [questionSaving, setQuestionSaving] = useState<string | null>(null);
+  const [questionNotice, setQuestionNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -60,6 +75,8 @@ export default function InboxPage({
         }
         const data = await res.json();
         setInbox(data.inbox);
+        const questionResponse = await fetch(`/api/inbox/${resolvedTokenForRequest(token)}/questions`, { cache: 'no-store' });
+        if (questionResponse.ok) setQuestions(await questionResponse.json());
       } catch (e: any) {
         setError(e.message);
       } finally {
@@ -68,6 +85,32 @@ export default function InboxPage({
     };
     fetchInbox();
   }, [token]);
+
+  const resolvedTokenForRequest = (value: string) => encodeURIComponent(value);
+
+  const submitQuestionReply = async (questionId: string) => {
+    if (!token) return;
+    const body = questionReplies[questionId]?.trim();
+    if (!body) return;
+    setQuestionSaving(questionId);
+    setQuestionNotice(null);
+    try {
+      const response = await fetch(`/api/inbox/${resolvedTokenForRequest(token)}/questions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ questionId, body }),
+      });
+      const saved = await response.json();
+      if (!response.ok) throw new Error(saved.error || 'Unable to send reply');
+      setQuestions((current) => current.map((question) => question.id === questionId ? {
+        ...question, status: 'answered', messages: [...question.messages, { ...saved, created_at: new Date().toISOString() }],
+      } : question));
+      setQuestionReplies((current) => ({ ...current, [questionId]: '' }));
+      setQuestionNotice('Reply sent. Your team can see it in Zevidt.');
+    } catch (replyError) {
+      setQuestionNotice(replyError instanceof Error ? replyError.message : 'Unable to send reply');
+    } finally {
+      setQuestionSaving(null);
+    }
+  };
 
 
 
@@ -165,6 +208,35 @@ export default function InboxPage({
             {uploadResult.uncertain ? <p role="alert">We could not confirm the result for {uploadResult.uncertain}. Please ask your team to check before sending it again. {uploadResult.notSent} remaining files were not sent.</p> : null}
           </div> : null}
         </div>
+
+        {questions.length > 0 ? <section className={styles.questions} aria-labelledby="questions-title">
+          <div className={styles.questionsHeader}>
+            <div>
+              <span className={styles.eyebrow}>A FEW QUICK QUESTIONS</span>
+              <h2 id="questions-title">Help us finish these transactions</h2>
+            </div>
+            <span>{questions.length} open</span>
+          </div>
+          {questionNotice ? <p className={styles.questionNotice} role="status">{questionNotice}</p> : null}
+          <div className={styles.questionList}>{questions.map((question) => {
+            const prompt = question.messages.find((message) => message.author_role === 'firm');
+            return <article key={question.id} className={styles.questionCard}>
+              <div className={styles.transactionSummary}>
+                <strong>{question.qbo_txn_type || 'Transaction'} {question.qbo_txn_doc_number || ''}</strong>
+                <span>{[question.qbo_txn_date, question.qbo_txn_vendor, question.qbo_txn_amount == null ? null : question.qbo_txn_amount.toLocaleString()].filter(Boolean).join(' · ')}</span>
+              </div>
+              <p className={styles.questionPrompt}>{prompt?.body || 'Please provide more information about this transaction.'}</p>
+              {question.messages.filter((message) => message.author_role === 'client').map((message) => <p key={message.id} className={styles.previousReply}><strong>Your reply:</strong> {message.body}</p>)}
+              <label className={styles.replyField}>
+                <span>Your reply</span>
+                <textarea rows={3} maxLength={4000} value={questionReplies[question.id] || ''} onChange={(event) => setQuestionReplies((current) => ({ ...current, [question.id]: event.target.value }))} placeholder="Add the missing context here" />
+              </label>
+              <button type="button" className={styles.replyButton} disabled={questionSaving === question.id || !questionReplies[question.id]?.trim()} onClick={() => void submitQuestionReply(question.id)}>
+                {questionSaving === question.id ? 'Sending…' : 'Send reply'}
+              </button>
+            </article>;
+          })}</div>
+        </section> : null}
 
         <div
           className={`${styles.dropzone} ${dragActive ? styles.dragActive : ''} ${uploading ? styles.uploading : ''}`}

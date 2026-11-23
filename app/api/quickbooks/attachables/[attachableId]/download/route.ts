@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { downloadFile, DownloadFileResult } from '@/lib/quickbooks';
-import { getAttachables, normalizeAttachables } from '@/lib/quickbooks';
+import { downloadAttachableBytes, getAttachables, normalizeAttachables } from '@/lib/quickbooks';
 
 /**
  * GET /api/quickbooks/attachables/[attachableId]/download
- * Downloads a single attachment file from QuickBooks and saves it with the new naming convention:
+ * Streams a single attachment file from QuickBooks with the naming convention:
  * {txnType}_{docNumber}_{originalFileName}
  * 
  * Phase 5C: Returns structured response with failed[] array instead of throwing 500
@@ -78,40 +77,24 @@ export async function GET(
       docNumber = 'N/A';
     }
 
-    // 4. Determine the destination folder (project root / attachments)
-    const path = await import('path');
-    const destFolder = path.join(process.cwd(), 'attachments');
-
-    // 5. Generate the new filename: {txnType}_{docNumber}_{originalFileName}
+    // 4. Generate the new filename: {txnType}_{docNumber}_{originalFileName}
     // Sanitize filename components to remove invalid characters (e.g., / in "N/A")
     const sanitize = (s: string) => s.replace(/[\\/:*?"<>|]/g, '_');
     const originalFileName = attachable.fileName || 'unknown';
     const newFileName = `${sanitize(txnType)}_${sanitize(docNumber)}_${originalFileName}`;
 
-    // 6. Download the file with failure collection
-    const failed: DownloadFileResult[] = [];
-    const result = await downloadFile(attachableId, newFileName, destFolder, failed, realmId);
-
-    // Phase 5C: Return structured response with failed[] instead of 500
-    if (!result.success) {
-      return NextResponse.json({
-        success: false,
-        error: result.error,
-        attachableId: result.attachableId,
-        fileName: result.fileName,
-        timestamp: result.timestamp,
-        failed: failed,
-      }, { status: 200 }); // Return 200 with failure info instead of 500
-    }
-
-    return NextResponse.json({
-      success: true,
-      filePath: result.filePath,
-      fileName: newFileName,
-      txnType,
-      docNumber,
-      originalFileName,
-      failed: failed, // Empty array for successful downloads
+    // 5. Stream bytes to the caller. A server-local file path is unusable to a
+    // browser and fails on read-only/serverless application filesystems.
+    const { bytes } = await downloadAttachableBytes(attachableId, realmId);
+    const encodedName = encodeURIComponent(newFileName).replace(/'/g, '%27');
+    return new NextResponse(new Uint8Array(bytes), {
+      status: 200,
+      headers: {
+        'content-type': attachable.contentType || 'application/octet-stream',
+        'content-length': String(bytes.length),
+        'content-disposition': `attachment; filename*=UTF-8''${encodedName}`,
+        'cache-control': 'private, no-store',
+      },
     });
   } catch (e: any) {
     console.error('Download endpoint error');

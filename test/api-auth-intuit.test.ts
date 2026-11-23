@@ -116,6 +116,37 @@ describe('QuickBooks OAuth and token-status routes', () => {
       if (originalRealmId === undefined) delete process.env.INTUIT_REALM_ID; else process.env.INTUIT_REALM_ID = originalRealmId;
     }
   });
+
+  it('allows an explicitly consented additional company after the first guarded realm', async () => {
+    const originalClientId = process.env.INTUIT_CLIENT_ID;
+    const originalClientSecret = process.env.INTUIT_CLIENT_SECRET;
+    const originalRedirectUri = process.env.INTUIT_REDIRECT_URI;
+    const originalRealmId = process.env.INTUIT_REALM_ID;
+    const originalFetch = globalThis.fetch;
+    try {
+      process.env.INTUIT_CLIENT_ID = 'test-client';
+      process.env.INTUIT_CLIENT_SECRET = 'test-secret';
+      process.env.INTUIT_REDIRECT_URI = 'http://localhost/api/auth/intuit/callback';
+      process.env.INTUIT_REALM_ID = 'initial-sandbox';
+      mocks.requireUser.mockResolvedValue({ id: 'user-1', app_metadata: { realm_id: 'initial-sandbox', qbo_realm_ids: ['initial-sandbox'] } });
+      mocks.cookies.mockResolvedValue({ get: (name: string) => ({ value: name === 'intuit_oauth_state' ? 'state-ok' : 'verifier-ok' }) });
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ access_token: 'access', refresh_token: 'refresh', expires_in: 3600 }) }) as typeof fetch;
+
+      const response = await oauthCallback(new Request('http://localhost/api/auth/intuit/callback?code=code&state=state-ok&realmId=second-company'));
+
+      expect(response.status).toBe(307);
+      expect(mocks.membershipUpsert).toHaveBeenCalledWith({ user_id: 'user-1', realm_id: 'second-company' }, { onConflict: 'user_id,realm_id' });
+      expect(mocks.updateUserById).toHaveBeenCalledWith('user-1', {
+        app_metadata: { realm_id: 'second-company', qbo_realm_ids: ['initial-sandbox', 'second-company'] },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalClientId === undefined) delete process.env.INTUIT_CLIENT_ID; else process.env.INTUIT_CLIENT_ID = originalClientId;
+      if (originalClientSecret === undefined) delete process.env.INTUIT_CLIENT_SECRET; else process.env.INTUIT_CLIENT_SECRET = originalClientSecret;
+      if (originalRedirectUri === undefined) delete process.env.INTUIT_REDIRECT_URI; else process.env.INTUIT_REDIRECT_URI = originalRedirectUri;
+      if (originalRealmId === undefined) delete process.env.INTUIT_REALM_ID; else process.env.INTUIT_REALM_ID = originalRealmId;
+    }
+  });
 });
 describe('OAuth state cookie security', () => {
   const originalNodeEnv = process.env.NODE_ENV;

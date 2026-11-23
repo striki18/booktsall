@@ -48,26 +48,27 @@ export function CompanySwitcher() {
     }
   }
 
-  if (companies.length < 2 && !error) return null;
-
   return (
-    <label className="flex items-center gap-2 text-xs font-medium text-neutral-600">
-      <span>Company</span>
-      <select
-        aria-label="Active QuickBooks company"
-        value={activeRealmId}
-        disabled={switching || companies.length < 2}
-        onChange={(event) => void selectCompany(event.target.value)}
-        className="max-w-52 rounded border border-neutral-300 bg-white px-2 py-1 text-xs text-neutral-900 disabled:opacity-60"
-      >
-        {companies.map((company) => (
-          <option key={company.realm_id} value={company.realm_id}>
-            {company.company_name || `Company ${company.realm_id}`}
-          </option>
-        ))}
-      </select>
+    <div className="flex items-center gap-2 text-xs font-medium text-neutral-600">
+      {companies.length ? <label className="flex items-center gap-2">
+        <span>Company</span>
+        <select
+          aria-label="Active QuickBooks company"
+          value={activeRealmId}
+          disabled={switching || companies.length < 2}
+          onChange={(event) => void selectCompany(event.target.value)}
+          className="max-w-52 rounded border border-neutral-300 bg-white px-2 py-1 text-xs text-neutral-900 disabled:opacity-60"
+        >
+          {companies.map((company) => (
+            <option key={company.realm_id} value={company.realm_id}>
+              {company.company_name || `Company ${company.realm_id}`}
+            </option>
+          ))}
+        </select>
+      </label> : null}
+      <a href="/api/auth/intuit" className="rounded border border-neutral-300 bg-white px-2 py-1 text-xs font-semibold text-neutral-800">+ Add company</a>
       {switching ? <span role="status">Switching…</span> : null}
       {error ? <span role="alert" className="text-red-700">{error}</span> : null}
-    </label>
+    </div>
   );
 }
