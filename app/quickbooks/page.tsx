@@ -3,7 +3,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { buildQboTransactionUrl } from '@/lib/qbo-links';
 import { countEvidenceRegisterStates, filterAndSortEvidenceRegister, type EvidenceRegisterSort, type EvidenceRegisterState, type EvidenceRegisterViewRow } from '@/lib/evidence-register-view';
-import { CompanySwitcher } from './company-switcher';
 import { WorkspaceHeader, useWordingMode } from './icons';
 import styles from './page.module.css';
 
@@ -2052,7 +2051,6 @@ export default function QuickbooksPage() {
             <span className={styles.pageSubtitle}>{financeMode ? 'A clear view of evidence, missing documents, and review items.' : 'A clear view of what’s ready and what needs attention.'}</span>
           </div>
           <div className={styles.headerRight}>
-            <CompanySwitcher />
             <div className={styles.connectionIndicator}>
               {renderHeaderConnectionBadge()}
               <span className={styles.companyName}>

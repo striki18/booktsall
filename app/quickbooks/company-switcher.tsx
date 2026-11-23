@@ -1,10 +1,11 @@
 "use client";
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 type Company = { realm_id: string; company_name: string | null };
 
-export function CompanySwitcher() {
+export function CompanySwitcher({ compact = false }: { compact?: boolean }) {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [activeRealmId, setActiveRealmId] = useState('');
   const [error, setError] = useState('');
@@ -49,24 +50,25 @@ export function CompanySwitcher() {
   }
 
   return (
-    <div className="flex items-center gap-2 text-xs font-medium text-neutral-600">
-      {companies.length ? <label className="flex items-center gap-2">
-        <span>Company</span>
+    <div className={compact ? 'companySwitcher companySwitcherCompact' : 'companySwitcher'}>
+      {companies.length ? <label>
+        <span className={compact ? 'sr-only' : ''}>Company</span>
         <select
           aria-label="Active QuickBooks company"
           value={activeRealmId}
           disabled={switching || companies.length < 2}
           onChange={(event) => void selectCompany(event.target.value)}
-          className="max-w-52 rounded border border-neutral-300 bg-white px-2 py-1 text-xs text-neutral-900 disabled:opacity-60"
+          className="companySwitcherSelect"
         >
-          {companies.map((company) => (
+          {companies.map((company, index) => (
             <option key={company.realm_id} value={company.realm_id}>
-              {company.company_name || `Company ${company.realm_id}`}
+              {company.company_name || (companies.length > 1 ? `QuickBooks company ${index + 1}` : 'QuickBooks company')}
             </option>
           ))}
         </select>
       </label> : null}
-      <a href="/api/auth/intuit" className="rounded border border-neutral-300 bg-white px-2 py-1 text-xs font-semibold text-neutral-800">+ Add company</a>
+      {!compact || companies.length === 0 ? <a href="/api/auth/intuit" className="companySwitcherAdd">+ Add company</a> : null}
+      {!compact ? <Link href="/firm" className="companySwitcherManage">Manage</Link> : null}
       {switching ? <span role="status">Switching…</span> : null}
       {error ? <span role="alert" className="text-red-700">{error}</span> : null}
     </div>

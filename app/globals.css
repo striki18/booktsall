@@ -546,10 +546,43 @@ body {
 .workspacePrimaryNav .isCurrent::after { display: none; }
 .workspaceTopbarActions { gap: 10px; }
 
+.workspaceUploadButton {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  padding: 0 16px;
+  background: var(--zevidt-blue);
+  box-shadow: 0 6px 16px rgba(62, 106, 225, .18);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.workspaceUploadButton:hover { background: var(--zevidt-blue-strong); }
+
+.companySwitcher { display: flex; align-items: center; gap: 8px; color: #667085; font-size: 12px; font-weight: 600; }
+.companySwitcher label { display: flex; align-items: center; gap: 8px; }
+.companySwitcherSelect {
+  max-width: 210px;
+  min-height: 36px;
+  border: 1px solid var(--zevidt-line);
+  border-radius: 9px;
+  padding: 0 32px 0 11px;
+  background: #fff;
+  color: var(--zevidt-navy);
+  font: inherit;
+}
+.companySwitcherAdd,
+.companySwitcherManage { color: var(--zevidt-blue-strong); }
+.companySwitcherCompact .companySwitcherSelect { max-width: 176px; }
+.companySwitcherCompact [role="alert"] { display: none; }
+
 .wordingToggle { border: 0; border-radius: 9px; background: #f2f4f7; padding: 3px; }
 .wordingToggle button { min-height: 30px; border-radius: 7px; padding: 0 10px; color: #667085; font-size: 12px; }
 .wordingToggle button[aria-pressed="true"] { color: var(--zevidt-navy); box-shadow: var(--zevidt-shadow-sm); }
 .workspaceProfileButton { width: 36px; height: 36px; background: var(--zevidt-navy); box-shadow: var(--zevidt-shadow-sm); }
+.workspacePanelLanguage { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 20px 0 12px; padding: 14px 0; border-top: 1px solid var(--zevidt-line); border-bottom: 1px solid var(--zevidt-line); color: #667085; font-size: 13px; font-weight: 650; }
 
 .workspaceSidePanel {
   top: 82px;
@@ -617,6 +650,7 @@ body {
   .workspacePrimaryNav { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; }
   .workspacePrimaryNav::-webkit-scrollbar { display: none; }
   .workspaceTopbarActions { margin-left: 0; }
+  .companySwitcherCompact { margin-left: auto; }
   .workspaceContent { width: min(100% - 40px, 820px); padding-top: 36px; }
 }
 
@@ -624,7 +658,8 @@ body {
   .workspaceTopbar { padding-right: 14px; padding-left: 14px; }
   .workspacePrimaryNav a,
   .workspacePrimaryNav button { min-height: 38px; padding: 0 11px; font-size: 13px; }
-  .wordingToggle { display: none; }
+  .companySwitcherCompact { display: none; }
+  .workspaceUploadButton { min-height: 36px; padding: 0 13px; }
   .workspaceContent { width: calc(100% - 28px); padding-top: 28px; }
   .workspaceContent h1 { font-size: 36px !important; }
 }

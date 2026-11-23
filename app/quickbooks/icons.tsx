@@ -6,9 +6,10 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { supabaseBrowser } from '@/lib/supabase-browser';
+import { CompanySwitcher } from './company-switcher';
 
 type WorkspaceSection = 'overview' | 'generate' | 'evidence' | 'missing' | 'attachments';
-type WorkspacePanel = 'work' | 'packages' | 'profile' | null;
+type WorkspacePanel = 'profile' | null;
 type QboConnectionState = 'checking' | 'connected' | 'needs_connection' | 'signed_out' | 'unavailable';
 export type WordingMode = 'general' | 'finance';
 
@@ -57,14 +58,6 @@ export function useWordingMode() {
   return { wording, setWording: chooseWording };
 }
 
-const workspaceSections: { id: WorkspaceSection; general: string; finance: string }[] = [
-  { id: 'overview', general: 'Activity', finance: 'Overview' },
-  { id: 'generate', general: 'Create a report', finance: 'Generate package' },
-  { id: 'evidence', general: 'Documents and transactions', finance: 'Evidence register' },
-  { id: 'missing', general: 'Needs documents', finance: 'Missing documents' },
-  { id: 'attachments', general: 'Files', finance: 'Attachments' },
-];
-
 export function WorkspaceHeader({
   activeSection,
   onSelectSection,
@@ -80,6 +73,7 @@ export function WorkspaceHeader({
   const { wording, setWording } = useWordingMode();
   const financeMode = wording === 'finance';
   const isHomeOverview = pathname === '/quickbooks' && (!activeSection || activeSection === 'overview');
+  const transactionsCurrent = pathname === '/quickbooks' && activeSection === 'evidence';
 
   useEffect(() => {
     let active = true;
@@ -127,15 +121,6 @@ export function WorkspaceHeader({
     }
   }
 
-  function openSection(section: WorkspaceSection) {
-    if (pathname === '/quickbooks' && onSelectSection) {
-      onSelectSection(section);
-      setPanel(null);
-      return;
-    }
-    window.location.assign(`/quickbooks?section=${section}`);
-  }
-
   return (
     <>
       <header className="workspaceTopbar">
@@ -144,8 +129,7 @@ export function WorkspaceHeader({
         </Link>
 
         <nav className="workspacePrimaryNav" aria-label="Primary navigation">
-          <Link href="/firm" className={pathname === '/firm' ? 'isCurrent' : ''}>Companies</Link>
-          <Link href="/quickbooks" className={pathname === '/quickbooks' ? 'isCurrent' : ''} onClick={(event) => {
+          <Link href="/quickbooks" className={isHomeOverview ? 'isCurrent' : ''} onClick={(event) => {
             if (pathname === '/quickbooks' && onSelectSection) {
               event.preventDefault();
               onSelectSection('overview');
@@ -153,20 +137,19 @@ export function WorkspaceHeader({
             }
           }}>Home</Link>
           <Link href="/documents" className={pathname === '/documents' ? 'isCurrent' : ''}>{financeMode ? 'Documents' : 'Inbox'}</Link>
-          <button type="button" aria-expanded={panel === 'work'} onClick={() => setPanel(panel === 'work' ? null : 'work')}>
-            Transactions
-          </button>
+          <Link href="/quickbooks?section=evidence" className={transactionsCurrent ? 'isCurrent' : ''} onClick={(event) => {
+            if (pathname === '/quickbooks' && onSelectSection) {
+              event.preventDefault();
+              onSelectSection('evidence');
+            }
+          }}>Transactions</Link>
           <Link href="/review" className={pathname === '/review' ? 'isCurrent' : ''}>{financeMode ? 'Evidence review' : 'Needs a look'}</Link>
-          <button type="button" aria-expanded={panel === 'packages'} onClick={() => setPanel(panel === 'packages' ? null : 'packages')}>
-            Packages
-          </button>
+          <Link href="/packages" className={pathname === '/packages' ? 'isCurrent' : ''}>Packages</Link>
         </nav>
 
         <div className="workspaceTopbarActions">
-          <div className="wordingToggle" role="group" aria-label="Language">
-            <button type="button" aria-pressed={!financeMode} onClick={() => setWording('general')}>General</button>
-            <button type="button" aria-pressed={financeMode} onClick={() => setWording('finance')}>Finance</button>
-          </div>
+          <CompanySwitcher compact />
+          <Link href="/documents" className="workspaceUploadButton">Upload</Link>
           {qboConnectionState !== 'signed_out' ? (
             <button type="button" className="workspaceProfileButton" aria-label="Open profile menu" aria-expanded={panel === 'profile'} onClick={() => setPanel(panel === 'profile' ? null : 'profile')}>Z</button>
           ) : null}
@@ -189,36 +172,28 @@ export function WorkspaceHeader({
       {panel ? (
         <>
           <button type="button" className="workspacePanelScrim" aria-label="Close menu" onClick={() => setPanel(null)} />
-          <aside className="workspaceSidePanel" aria-label={panel === 'work' ? 'Transaction menu' : panel === 'packages' ? 'Package menu' : 'Profile menu'}>
+          <aside className="workspaceSidePanel workspaceAccountPanel" aria-label="Profile menu">
             <div className="workspacePanelHeading">
               <div>
-                <p>{panel === 'work' ? 'TRANSACTIONS' : panel === 'packages' ? 'EXPORTS & AUDITS' : 'ACCOUNT'}</p>
-                <h2>{panel === 'work' ? 'Transactions' : panel === 'packages' ? 'Packages' : 'Profile'}</h2>
+                <p>ACCOUNT</p>
+                <h2>Workspace</h2>
               </div>
               <button type="button" aria-label="Close menu" onClick={() => setPanel(null)}>×</button>
             </div>
-            {panel === 'work' ? (
-              <div className="workspacePanelLinks">
-                {workspaceSections.map((section) => (
-                  <button key={section.id} type="button" className={activeSection === section.id ? 'isCurrent' : ''} onClick={() => openSection(section.id)}>
-                    <span>{financeMode ? section.finance : section.general}</span>
-                  </button>
-                ))}
-                <Link href="/firm/inbox" onClick={() => setPanel(null)}>{financeMode ? 'Collection requests' : 'Client requests'}</Link>
+            <div className="workspacePanelLanguage">
+              <span>Language</span>
+              <div className="wordingToggle" role="group" aria-label="Language">
+                <button type="button" aria-pressed={!financeMode} onClick={() => setWording('general')}>General</button>
+                <button type="button" aria-pressed={financeMode} onClick={() => setWording('finance')}>Finance</button>
               </div>
-            ) : panel === 'packages' ? (
-              <div className="workspacePanelLinks">
-                <button type="button" onClick={() => openSection('generate')}>Create package</button>
-                <Link href="/packages" onClick={() => setPanel(null)}>Package history</Link>
-                <Link href="/audit-packages" onClick={() => setPanel(null)}>Audit packages</Link>
-                <button type="button" onClick={() => openSection('attachments')}>QuickBooks files</button>
-              </div>
-            ) : (
-              <div className="workspacePanelLinks">
-                <button type="button" onClick={() => { setPanel(null); window.location.assign('/quickbooks?settings=integrations'); }}>Settings & integrations</button>
-                <button type="button" className="workspaceSignOut" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button>
-              </div>
-            )}
+            </div>
+            <div className="workspacePanelLinks">
+              <Link href="/firm" onClick={() => setPanel(null)}>Companies & team</Link>
+              <Link href="/firm/inbox" onClick={() => setPanel(null)}>{financeMode ? 'Collection requests' : 'Client requests'}</Link>
+              <Link href="/audit-packages" onClick={() => setPanel(null)}>Audit packages</Link>
+              <button type="button" onClick={() => { setPanel(null); window.location.assign('/quickbooks?settings=integrations'); }}>Settings & integrations</button>
+              <button type="button" className="workspaceSignOut" onClick={() => void signOut()} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button>
+            </div>
           </aside>
         </>
       ) : null}
